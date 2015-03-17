@@ -1457,7 +1457,7 @@ typedef struct or_connection_t {
    * recent, we can rate limit it further. */
 
   /* Channel using this connection */
-  channel_tls_t *chan;
+  channel_t *chan;
 
   tor_addr_t real_addr; /**< The actual address that this connection came from
                        * or went to.  The <b>addr</b> field is prone to

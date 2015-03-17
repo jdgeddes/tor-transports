@@ -153,7 +153,7 @@ connection_or_set_identity_digest(or_connection_t *conn, const char *digest)
   if (! tor_digest_is_zero(conn->identity_digest)) {
     connection_or_remove_from_identity_map(conn);
     if (conn->chan)
-      channel_clear_identity_digest(TLS_CHAN_TO_BASE(conn->chan));
+      channel_clear_identity_digest(conn->chan);
   }
 
   memcpy(conn->identity_digest, digest, DIGEST_LEN);
@@ -167,7 +167,7 @@ connection_or_set_identity_digest(or_connection_t *conn, const char *digest)
 
   /* Deal with channels */
   if (conn->chan)
-    channel_set_identity_digest(TLS_CHAN_TO_BASE(conn->chan), digest);
+    channel_set_identity_digest(conn->chan, digest);
 
 #if 1
   /* Testing code to check for bugs in representation. */
@@ -392,8 +392,8 @@ connection_or_change_state(or_connection_t *conn, uint8_t state)
   conn->base_.state = state;
 
   if (conn->chan)
-    channel_tls_handle_state_change_on_orconn(conn->chan, conn,
-                                              old_state, state);
+    channel_handle_state_change_on_orconn(conn->chan, conn,
+                                           old_state, state);
 }
 
 /** Return the number of circuits using an or_connection_t; this used to
@@ -406,7 +406,7 @@ connection_or_get_num_circuits(or_connection_t *conn)
   tor_assert(conn);
 
   if (conn->chan) {
-    return channel_num_circuits(TLS_CHAN_TO_BASE(conn->chan));
+    return channel_num_circuits(conn->chan);
   } else return 0;
 }
 
@@ -531,7 +531,7 @@ connection_or_process_inbuf(or_connection_t *conn)
           ret = -1;
         /* Touch the channel's active timestamp if there is one */
         if (conn->chan)
-          channel_timestamp_active(TLS_CHAN_TO_BASE(conn->chan));
+          channel_timestamp_active(conn->chan);
       }
       if (ret < 0) {
         connection_or_close_for_error(conn, 0);
@@ -595,13 +595,13 @@ connection_or_flushed_some(or_connection_t *conn)
    * high water mark. */
   datalen = connection_get_outbuf_len(TO_CONN(conn));
   if (datalen < OR_CONN_LOWWATER) {
-    while ((conn->chan) && channel_tls_more_to_flush(conn->chan)) {
+    while ((conn->chan) && channel_more_to_flush(conn->chan)) {
       /* Compute how many more cells we want at most */
       n = CEIL_DIV(OR_CONN_HIGHWATER - datalen, cell_network_size);
       /* Bail out if we don't want any more */
       if (n <= 0) break;
       /* We're still here; try to flush some more cells */
-      flushed = channel_tls_flush_some_cells(conn->chan, n);
+      flushed = channel_flush_some_cells(conn->chan, n);
       /* Bail out if it says it didn't flush anything */
       if (flushed <= 0) break;
       /* How much in the outbuf now? */
@@ -690,12 +690,12 @@ connection_or_about_to_close(or_connection_t *or_conn)
 
   /* Tell the controlling channel we're closed */
   if (or_conn->chan) {
-    channel_closed(TLS_CHAN_TO_BASE(or_conn->chan));
+    channel_closed(or_conn->chan);
     /*
      * NULL this out because the channel might hang around a little
      * longer before channel_run_cleanup() gets it.
      */
-    or_conn->chan->conn = NULL;
+    /*or_conn->chan->conn = NULL;*/
     or_conn->chan = NULL;
   }
 
@@ -930,7 +930,7 @@ connection_or_init_conn_from_address(or_connection_t *conn,
    */
 
   if (conn->chan) {
-    channel_tls_update_marks(conn);
+    channel_update_marks(conn->chan, conn);
   }
 }
 
@@ -943,7 +943,7 @@ connection_or_is_bad_for_new_circs(or_connection_t *or_conn)
   tor_assert(or_conn);
 
   if (or_conn->chan)
-    return channel_is_bad_for_new_circs(TLS_CHAN_TO_BASE(or_conn->chan));
+    return channel_is_bad_for_new_circs(or_conn->chan);
   else return 0;
 }
 
@@ -953,7 +953,7 @@ connection_or_mark_bad_for_new_circs(or_connection_t *or_conn)
   tor_assert(or_conn);
 
   if (or_conn->chan)
-    channel_mark_bad_for_new_circs(TLS_CHAN_TO_BASE(or_conn->chan));
+    channel_mark_bad_for_new_circs(or_conn->chan);
 }
 
 /** How old do we let a connection to an OR get before deciding it's
@@ -1034,11 +1034,7 @@ connection_or_group_set_badness(or_connection_t *head, int force)
       continue;
     }
 
-    if (!best ||
-        channel_is_better(now,
-                          TLS_CHAN_TO_BASE(or_conn->chan),
-                          TLS_CHAN_TO_BASE(best->chan),
-                          0)) {
+    if (!best || channel_is_better(now, or_conn->chan,best->chan, 0)) {
       best = or_conn;
     }
   }
@@ -1066,9 +1062,7 @@ connection_or_group_set_badness(or_connection_t *head, int force)
         or_conn->base_.state != OR_CONN_STATE_OPEN)
       continue;
     if (or_conn != best &&
-        channel_is_better(now,
-                          TLS_CHAN_TO_BASE(best->chan),
-                          TLS_CHAN_TO_BASE(or_conn->chan), 1)) {
+        channel_is_better(now, best->chan, or_conn->chan, 1)) {
       /* This isn't the best conn, _and_ the best conn is better than it,
          even when we're being forgiving. */
       if (best->is_canonical) {
@@ -1149,7 +1143,7 @@ connection_or_notify_error(or_connection_t *conn,
 
   /* Tell the controlling channel if we have one */
   if (conn->chan) {
-    chan = TLS_CHAN_TO_BASE(conn->chan);
+    chan = conn->chan;
     /* Don't transition if we're already in closing, closed or error */
     if (!(chan->state == CHANNEL_STATE_CLOSING ||
           chan->state == CHANNEL_STATE_CLOSED ||
@@ -1179,7 +1173,7 @@ connection_or_notify_error(or_connection_t *conn,
 or_connection_t *
 connection_or_connect(const tor_addr_t *_addr, uint16_t port,
                       const char *id_digest,
-                      channel_tls_t *chan)
+                      channel_t *chan)
 {
   or_connection_t *conn;
   const or_options_t *options = get_options();
@@ -1210,7 +1204,8 @@ connection_or_connect(const tor_addr_t *_addr, uint16_t port,
    * keep the channel up to date.
    */
   conn->chan = chan;
-  chan->conn = conn;
+  if(chan->new_orconn)
+    chan->new_orconn(chan, conn);
   connection_or_init_conn_from_address(conn, &addr, port, id_digest, 1);
   connection_or_change_state(conn, OR_CONN_STATE_CONNECTING);
   control_event_or_conn_status(conn, OR_CONN_EVENT_LAUNCHED, 0);
@@ -1310,7 +1305,7 @@ connection_or_close_normally(or_connection_t *orconn, int flush)
   if (flush) connection_mark_and_flush_internal(TO_CONN(orconn));
   else connection_mark_for_close_internal(TO_CONN(orconn));
   if (orconn->chan) {
-    chan = TLS_CHAN_TO_BASE(orconn->chan);
+    chan = orconn->chan;
     /* Don't transition if we're already in closing, closed or error */
     if (!(chan->state == CHANNEL_STATE_CLOSING ||
           chan->state == CHANNEL_STATE_CLOSED ||
@@ -1333,7 +1328,7 @@ connection_or_close_for_error(or_connection_t *orconn, int flush)
   if (flush) connection_mark_and_flush_internal(TO_CONN(orconn));
   else connection_mark_for_close_internal(TO_CONN(orconn));
   if (orconn->chan) {
-    chan = TLS_CHAN_TO_BASE(orconn->chan);
+    chan = orconn->chan;
     /* Don't transition if we're already in closing, closed or error */
     if (!(chan->state == CHANNEL_STATE_CLOSING ||
           chan->state == CHANNEL_STATE_CLOSED ||
@@ -1362,12 +1357,12 @@ connection_tls_start_handshake,(or_connection_t *conn, int receiving))
   if (receiving) {
     /* It shouldn't already be set */
     tor_assert(!(conn->chan));
-    chan_listener = channel_tls_get_listener();
+    chan_listener = channel_get_listener();
     if (!chan_listener) {
-      chan_listener = channel_tls_start_listener();
+      chan_listener = channel_start_listener();
       command_setup_listener(chan_listener);
     }
-    chan = channel_tls_handle_incoming(conn);
+    chan = channel_handle_incoming(conn);
     channel_listener_queue_incoming(chan_listener, chan);
   }
 
@@ -1696,7 +1691,7 @@ connection_or_check_valid_tls_handshake(or_connection_t *conn,
   }
 
   tor_assert(conn->chan);
-  channel_set_circid_type(TLS_CHAN_TO_BASE(conn->chan), identity_rcvd, 1);
+  channel_set_circid_type(conn->chan, identity_rcvd, 1);
 
   crypto_pk_free(identity_rcvd);
 
@@ -1784,7 +1779,7 @@ connection_or_client_used(or_connection_t *conn)
   tor_assert(conn);
 
   if (conn->chan) {
-    return channel_when_last_client(TLS_CHAN_TO_BASE(conn->chan));
+    return channel_when_last_client(conn->chan);
   } else return 0;
 }
 
@@ -2010,7 +2005,7 @@ connection_or_write_cell_to_buf(const cell_t *cell, or_connection_t *conn)
 
   /* Touch the channel's active timestamp if there is one */
   if (conn->chan)
-    channel_timestamp_active(TLS_CHAN_TO_BASE(conn->chan));
+    channel_timestamp_active(conn->chan);
 
   if (conn->base_.state == OR_CONN_STATE_OR_HANDSHAKING_V3)
     or_handshake_state_record_cell(conn, conn->handshake_state, cell, 0);
@@ -2037,7 +2032,7 @@ connection_or_write_var_cell_to_buf(const var_cell_t *cell,
 
   /* Touch the channel's active timestamp if there is one */
   if (conn->chan)
-    channel_timestamp_active(TLS_CHAN_TO_BASE(conn->chan));
+    channel_timestamp_active(conn->chan);
 }
 
 /** See whether there's a variable-length cell waiting on <b>or_conn</b>'s
@@ -2078,10 +2073,11 @@ connection_or_process_cells_from_inbuf(or_connection_t *conn)
 
       /* Touch the channel's active timestamp if there is one */
       if (conn->chan)
-        channel_timestamp_active(TLS_CHAN_TO_BASE(conn->chan));
+        channel_timestamp_active(conn->chan);
 
       circuit_build_times_network_is_live(get_circuit_build_times_mutable());
-      channel_tls_handle_var_cell(var_cell, conn);
+      if(conn->chan->handle_var_cell)
+         conn->chan->handle_var_cell(var_cell, conn);
       var_cell_free(var_cell);
     } else {
       const int wide_circ_ids = conn->wide_circ_ids;
@@ -2094,7 +2090,7 @@ connection_or_process_cells_from_inbuf(or_connection_t *conn)
 
       /* Touch the channel's active timestamp if there is one */
       if (conn->chan)
-        channel_timestamp_active(TLS_CHAN_TO_BASE(conn->chan));
+        channel_timestamp_active(conn->chan);
 
       circuit_build_times_network_is_live(get_circuit_build_times_mutable());
       connection_fetch_from_buf(buf, cell_network_size, TO_CONN(conn));
@@ -2103,7 +2099,8 @@ connection_or_process_cells_from_inbuf(or_connection_t *conn)
        * network-order string) */
       cell_unpack(&cell, buf, wide_circ_ids);
 
-      channel_tls_handle_cell(&cell, conn);
+      if(conn->chan->handle_cell)
+         conn->chan->handle_cell(&cell, conn);
     }
   }
 }

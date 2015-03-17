@@ -541,15 +541,15 @@ connection_free_(connection_t *conn)
       log_info(LD_CHANNEL,
                "Freeing orconn at %p, saw channel %p with ID "
                U64_FORMAT " left un-NULLed",
-               or_conn, TLS_CHAN_TO_BASE(or_conn->chan),
+               or_conn, or_conn->chan,
                U64_PRINTF_ARG(
-                 TLS_CHAN_TO_BASE(or_conn->chan)->global_identifier));
-      if (!(TLS_CHAN_TO_BASE(or_conn->chan)->state == CHANNEL_STATE_CLOSED ||
-            TLS_CHAN_TO_BASE(or_conn->chan)->state == CHANNEL_STATE_ERROR)) {
-        channel_close_for_error(TLS_CHAN_TO_BASE(or_conn->chan));
+                 or_conn->chan->global_identifier));
+      if (!(or_conn->chan->state == CHANNEL_STATE_CLOSED ||
+            or_conn->chan->state == CHANNEL_STATE_ERROR)) {
+        channel_close_for_error(or_conn->chan);
       }
 
-      or_conn->chan->conn = NULL;
+      /*or_conn->chan->conn = NULL;*/
       or_conn->chan = NULL;
     }
   }
@@ -3787,7 +3787,7 @@ connection_handle_write_impl(connection_t *conn, int force)
      * or_conn to check if it needs to geoip_change_dirreq_state() */
     /* XXXX move this to flushed_some or finished_flushing -NM */
     if (buf_datalen(conn->outbuf) == 0 && or_conn->chan)
-      channel_notify_flushed(TLS_CHAN_TO_BASE(or_conn->chan));
+      channel_notify_flushed(or_conn->chan);
 
     switch (result) {
       CASE_TOR_TLS_ERROR_ANY:

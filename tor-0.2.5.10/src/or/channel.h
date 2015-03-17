@@ -117,6 +117,14 @@ struct channel_s {
   /** Write a variable-length cell to an open channel */
   int (*write_var_cell)(channel_t *, var_cell_t *);
 
+  void (*handle_cell)(cell_t *, or_connection_t *);
+  void (*handle_var_cell)(var_cell_t *, or_connection_t *);
+
+  void (*handle_state_change_on_orconn)(channel_t *, or_connection_t *, uint8_t, uint8_t);
+  int (*more_to_flush)(channel_t *);
+  ssize_t (*flush_some_cells)(channel_t *, ssize_t);
+  void (*new_orconn)(channel_t *, or_connection_t *);
+
   /**
    * Hash of the public RSA key for the other side's identity key, or
    * zeroes if the other side hasn't shown us a valid identity key.
@@ -271,6 +279,9 @@ void channel_write_cell(channel_t *chan, cell_t *cell);
 void channel_write_packed_cell(channel_t *chan, packed_cell_t *cell);
 void channel_write_var_cell(channel_t *chan, var_cell_t *cell);
 
+channel_listener_t *channel_get_listener(void);
+channel_listener_t *channel_start_listener(void);
+
 void channel_listener_mark_for_close(channel_listener_t *chan_l);
 
 /* Channel callback registrations */
@@ -415,6 +426,8 @@ channel_t * channel_get_for_extend(const char *digest,
                                    const char **msg_out,
                                    int *launch_out);
 
+channel_t *channel_handle_incoming(or_connection_t *orconn);
+
 /* Ask which of two channels is better for circuit-extension purposes */
 int channel_is_better(time_t now,
                       channel_t *a, channel_t *b,
@@ -464,6 +477,10 @@ void channel_listener_dump_statistics(channel_listener_t *chan_l,
                                       int severity);
 void channel_listener_dump_transport_statistics(channel_listener_t *chan_l,
                                                 int severity);
+
+void channel_handle_state_change_on_orconn(channel_t *chan, 
+    or_connection_t *conn, uint8_t old_state, uint8_t state);
+void channel_update_marks(channel_t *chan, or_connection_t *conn);
 
 /* Timestamp queries */
 time_t channel_when_created(channel_t *chan);

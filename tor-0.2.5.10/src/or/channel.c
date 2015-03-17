@@ -76,6 +76,10 @@ static smartlist_t *finished_listeners = NULL;
 /* Counter for ID numbers */
 static uint64_t n_channels_allocated = 0;
 
+/** Active listener, if any */
+channel_listener_t *channel_listener = NULL;
+
+
 /* Digest->channel map
  *
  * Similar to the one used in connection_or.c, this maps from the identity
@@ -748,6 +752,64 @@ channel_init(channel_t *chan)
   chan->has_been_open = 0;
 }
 
+
+/**
+ * Close a channel_listener_t
+ *
+ * This implements the close method for channel_listener_t
+ */
+
+static void
+channel_listener_close_method(channel_listener_t *chan_l)
+{
+  tor_assert(chan_l);
+
+  /*
+   * Listeners we just go ahead and change state through to CLOSED, but
+   * make sure to check if they're channel_tls_listener to NULL it out.
+   */
+  if (chan_l == channel_listener)
+    channel_listener = NULL;
+
+  if (!(chan_l->state == CHANNEL_LISTENER_STATE_CLOSING ||
+        chan_l->state == CHANNEL_LISTENER_STATE_CLOSED ||
+        chan_l->state == CHANNEL_LISTENER_STATE_ERROR)) {
+    channel_listener_change_state(chan_l, CHANNEL_LISTENER_STATE_CLOSING);
+  }
+
+  if (chan_l->incoming_list) {
+    SMARTLIST_FOREACH_BEGIN(chan_l->incoming_list,
+                            channel_t *, ichan) {
+      channel_mark_for_close(ichan);
+    } SMARTLIST_FOREACH_END(ichan);
+
+    smartlist_free(chan_l->incoming_list);
+    chan_l->incoming_list = NULL;
+  }
+
+  if (!(chan_l->state == CHANNEL_LISTENER_STATE_CLOSED ||
+        chan_l->state == CHANNEL_LISTENER_STATE_ERROR)) {
+    channel_listener_change_state(chan_l, CHANNEL_LISTENER_STATE_CLOSED);
+  }
+}
+
+/**
+ * Describe the transport for a channel_listener_t
+ *
+ * This returns the string "TLS channel (listening)" to the upper
+ * layer.
+ */
+
+static const char *
+channel_listener_describe_transport_method(channel_listener_t *chan_l)
+{
+  tor_assert(chan_l);
+
+  return "Channel (listening)";
+}
+
+
+
 /**
  * Initialize a channel listener
  *
@@ -766,6 +828,51 @@ channel_init_listener(channel_listener_t *chan_l)
 
   /* Timestamp it */
   channel_listener_timestamp_created(chan_l);
+
+  chan_l->state = CHANNEL_LISTENER_STATE_LISTENING;
+  chan_l->close = channel_listener_close_method;
+  chan_l->describe_transport = channel_listener_describe_transport_method;
+}
+
+/**
+ * Return the current channel_tls_t listener
+ *
+ * Returns the current channel listener for incoming TLS connections, or
+ * NULL if none has been established
+ */
+channel_listener_t *
+channel_get_listener(void)
+{
+  return channel_listener;
+}
+
+/**
+ * Start a channel_tls_t listener if necessary
+ *
+ * Return the current channel_tls_t listener, or start one if we haven't yet,
+ * and return that.
+ */
+
+channel_listener_t *
+channel_start_listener(void)
+{
+  channel_listener_t *listener;
+
+  if (!channel_listener) {
+    listener = tor_malloc_zero(sizeof(*listener));
+    channel_init_listener(listener);
+    channel_listener = listener;
+
+    log_debug(LD_CHANNEL,
+              "Starting channel listener %p with global id " U64_FORMAT,
+              listener, U64_PRINTF_ARG(listener->global_identifier));
+
+    channel_listener_register(listener);
+  } else {
+    listener = channel_listener;
+  }
+
+  return listener;
 }
 
 /**
@@ -2065,6 +2172,9 @@ channel_flush_some_cells(channel_t *chan, ssize_t num_cells)
 
   tor_assert(chan);
 
+  if(chan->flush_some_cells)
+    chan->flush_some_cells(chan, num_cells);
+
   if (num_cells < 0) unlimited = 1;
   if (!unlimited && num_cells <= flushed) goto done;
 
@@ -2258,6 +2368,9 @@ int
 channel_more_to_flush(channel_t *chan)
 {
   tor_assert(chan);
+
+  if(chan->more_to_flush)
+    chan->more_to_flush(chan);
 
   /* Check if we have any queued */
   if (! TOR_SIMPLEQ_EMPTY(&chan->incoming_queue))
@@ -2618,6 +2731,54 @@ channel_queue_var_cell(channel_t *chan, var_cell_t *var_cell)
     if (chan->cell_handler ||
         chan->var_cell_handler) {
       channel_process_cells(chan);
+    }
+  }
+}
+
+/**
+ * NEW ABSTRACTED FUNCTIONS
+ **/
+
+void 
+channel_handle_state_change_on_orconn(channel_t *chan, or_connection_t *conn, uint8_t old_state, uint8_t state)
+{
+  tor_assert(chan);
+  tor_assert(conn);
+
+  if(chan->handle_state_change_on_orconn) 
+    chan->handle_state_change_on_orconn(chan, conn, old_state, state);
+}
+
+/**
+ * Update channel marks after connection_or.c has changed an address
+ *
+ * This is called from connection_or_init_conn_from_address() after the
+ * connection's _base.addr or real_addr fields have potentially been changed
+ * so we can recalculate the local mark.  Notably, this happens when incoming
+ * connections are reverse-proxied and we only learn the real address of the
+ * remote router by looking it up in the consensus after we finish the
+ * handshake and know an authenticated identity digest.
+ */
+
+void
+channel_update_marks(channel_t *chan, or_connection_t *conn)
+{
+  tor_assert(chan);
+  tor_assert(conn);
+
+  if (is_local_addr(&(TO_CONN(conn)->addr))) {
+    if (!channel_is_local(chan)) {
+      log_debug(LD_CHANNEL,
+                "Marking channel " U64_FORMAT " at %p as local",
+                U64_PRINTF_ARG(chan->global_identifier), chan);
+      channel_mark_local(chan);
+    }
+  } else {
+    if (channel_is_local(chan)) {
+      log_debug(LD_CHANNEL,
+                "Marking channel " U64_FORMAT " at %p as remote",
+                U64_PRINTF_ARG(chan->global_identifier), chan);
+      channel_mark_remote(chan);
     }
   }
 }
@@ -2994,6 +3155,38 @@ channel_connect(const tor_addr_t *addr, uint16_t port,
                 const char *id_digest)
 {
   return channel_tls_connect(addr, port, id_digest);
+}
+
+/**
+ * Create a new channel around an incoming or_connection_t
+ */
+
+channel_t *
+channel_handle_incoming(or_connection_t *orconn)
+{
+  tor_assert(orconn);
+
+  channel_t *chan = channel_tls_handle_incoming(orconn);
+  orconn->chan = chan;
+
+  if (is_local_addr(&(TO_CONN(orconn)->addr))) {
+    log_debug(LD_CHANNEL,
+              "Marking new incoming channel " U64_FORMAT " at %p as local",
+              U64_PRINTF_ARG(chan->global_identifier), chan);
+    channel_mark_local(chan);
+  } else {
+    log_debug(LD_CHANNEL,
+              "Marking new incoming channel " U64_FORMAT " at %p as remote",
+              U64_PRINTF_ARG(chan->global_identifier), chan);
+    channel_mark_remote(chan);
+  }
+
+  channel_mark_incoming(chan);
+
+  /* Register it */
+  channel_register(chan);
+
+  return chan;
 }
 
 /**

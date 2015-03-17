@@ -38,7 +38,7 @@ void connection_or_notify_error(or_connection_t *conn,
                                 int reason, const char *msg);
 or_connection_t *connection_or_connect(const tor_addr_t *addr, uint16_t port,
                                        const char *id_digest,
-                                       channel_tls_t *chan);
+                                       channel_t *chan);
 
 void connection_or_close_normally(or_connection_t *orconn, int flush);
 void connection_or_close_for_error(or_connection_t *orconn, int flush);

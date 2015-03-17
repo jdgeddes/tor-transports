@@ -861,7 +861,7 @@ hibernate_go_dormant(time_t now)
                                     END_STREAM_REASON_HIBERNATING);
     else if (conn->type == CONN_TYPE_OR) {
       if (TO_OR_CONN(conn)->chan) {
-        channel_mark_for_close(TLS_CHAN_TO_BASE(TO_OR_CONN(conn)->chan));
+        channel_mark_for_close(TO_OR_CONN(conn)->chan);
       } else {
          connection_mark_for_close(conn);
       }
