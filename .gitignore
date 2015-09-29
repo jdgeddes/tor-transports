@@ -4,6 +4,7 @@
 */build
 *.o
 *.d
+*.so
 *.log
 *ycm*
 experiments
