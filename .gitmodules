@@ -1,3 +1,6 @@
 [submodule "xtcp/libs/libutp"]
 	path = xtcp/libs/libutp
 	url = git@github.com:bittorrent/libutp.git
+[submodule "shadow"]
+	path = shadow
+	url = git@github.com:shadow/shadow.git
