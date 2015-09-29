@@ -5,4 +5,5 @@
 *.o
 *.d
 *.log
+*ycm*
 experiments
