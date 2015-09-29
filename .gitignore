@@ -4,4 +4,5 @@
 */build
 *.o
 *.d
+*.log
 experiments
