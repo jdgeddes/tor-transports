@@ -29,10 +29,10 @@ void *queue_pop(queue_t **head);
 int queue_length(queue_t *head);
 
 buffer_t *buffer_new();
-void buffer_append(buffer_t *buffer, unsigned char *data, int datalen);
-int buffer_length(buffer_t *buffer);
-void buffer_copy_bytes(buffer_t *buffer, unsigned char *data, int bytes);
-void buffer_pop_bytes(buffer_t *buffer, unsigned char *data, int bytes);
+void buffer_append(buffer_t *buffer, unsigned char *data, size_t datalen);
+size_t buffer_length(buffer_t *buffer);
+void buffer_copy_bytes(buffer_t *buffer, unsigned char *data, size_t bytes);
+void buffer_pop_bytes(buffer_t *buffer, unsigned char *data, size_t bytes);
 void buffer_free(buffer_t *buffer);
 
 hashtable_t *hashtable_create();
