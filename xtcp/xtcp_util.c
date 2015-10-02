@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <unistd.h>
 #include <time.h>
 #include <math.h>
 #include <inttypes.h>
@@ -19,8 +20,8 @@ struct queue_s {
 
 struct buffer_s {
     unsigned char *data;
-    int len;
-    int size;
+    size_t len;
+    size_t size;
 };
 
 
@@ -52,6 +53,9 @@ void xtcp_log(XTCPLogLevel log_level, const char *filename, const char *function
         }
     }
 
+    char hostname[128];
+    gethostname(hostname, 128);
+
     time(&now);
     tm_info = localtime(&now);
     strftime(time_buffer, 32, "%Y-%m-%d %H:%M:%S", tm_info);
@@ -60,7 +64,7 @@ void xtcp_log(XTCPLogLevel log_level, const char *filename, const char *function
     clock_gettime(CLOCK_REALTIME, &ts);
     long ms = round(ts.tv_nsec / 1.0e6);
 
-    fprintf(logfp, "[%s.%03ld] ", time_buffer, ms);
+    fprintf(logfp, "[%s] [%s.%03ld] ", hostname, time_buffer, ms);
 
     switch(log_level) {
         case XTCP_LOG_DEBUG:
@@ -157,8 +161,8 @@ buffer_t *buffer_new() {
     return buffer;
 }
 
-void buffer_append(buffer_t *buffer, unsigned char *data, int datalen) {
-    int newsize = buffer->size;
+void buffer_append(buffer_t *buffer, unsigned char *data, size_t datalen) {
+    size_t newsize = buffer->size;
     while(buffer->len + datalen > newsize) {
         newsize = MAX(newsize, 1) * 2;
     }
@@ -172,17 +176,17 @@ void buffer_append(buffer_t *buffer, unsigned char *data, int datalen) {
     buffer->len += datalen;
 }
 
-int buffer_length(buffer_t *buffer) {
+size_t buffer_length(buffer_t *buffer) {
     return buffer->len;
 }
 
-void buffer_copy_bytes(buffer_t *buffer, unsigned char *data, int bytes) {
+void buffer_copy_bytes(buffer_t *buffer, unsigned char *data, size_t bytes) {
     memcpy(data, buffer->data, bytes);
 }
 
-void buffer_pop_bytes(buffer_t *buffer, unsigned char *data, int bytes) {
+void buffer_pop_bytes(buffer_t *buffer, unsigned char *data, size_t bytes) {
     buffer_copy_bytes(buffer, data, bytes);
-    memcpy(buffer->data, buffer->data + bytes, buffer->len - bytes);
+    memmove(buffer->data, buffer->data + bytes, buffer->len - bytes);
     buffer->len -= bytes;
 
     if(buffer->len * 2 < buffer->size) {
@@ -271,6 +275,10 @@ void *hashtable_remove(hashtable_t *table, int key) {
     }
     if(entry->next) {
         entry->next->prev = entry->prev;
+    }
+    if(!entry->prev && !entry->next) {
+        int idx = _hashint(key) % HT_SIZE;
+        table->entries[idx] = NULL;
     }
 
     void *value = entry->value;
