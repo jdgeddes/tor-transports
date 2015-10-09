@@ -56,5 +56,7 @@ void slave_runParallel(Slave* slave);
 void slave_runSerial(Slave* slave);
 void slave_storeProgram(Slave* slave, Program* prog);
 Program* slave_getProgram(Slave* slave, GQuark pluginID);
+void slave_storePreload(Slave* slave, Preload* preload);
+Preload* slave_getPreload(Slave* slave, GQuark preloadID);
 
 #endif /* SHD_SLAVE_H_ */

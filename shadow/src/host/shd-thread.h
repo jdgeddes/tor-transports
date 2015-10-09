@@ -11,7 +11,7 @@
 
 typedef struct _Thread Thread;
 
-Thread* thread_new(Process* parentProc, Program* prog);
+Thread* thread_new(Process* parentProc, Program* prog, Preload *preload);
 void thread_ref(Thread* thread);
 void thread_unref(Thread* thread);
 
@@ -19,15 +19,21 @@ gboolean thread_isRunning(Thread* thread);
 void thread_stop(Thread* thread);
 
 void thread_executeInit(Thread* thread, ShadowPluginInitializeFunc init);
+void thread_executePreloadInit(Thread* thread, PreloadInitFunc init);
 void thread_executeNew(Thread* thread, PluginNewInstanceFunc new, gint argcParam, gchar* argvParam[]);
 void thread_execute(Thread* thread, PluginNotifyFunc func);
 void thread_executeExitCallback(Thread* thread, void (*callback)(int , void *), gpointer argument);
 void thread_executeCallback2(Thread* thread, CallbackFunc callback, gpointer data, gpointer callbackArgument);
 
 gboolean thread_shouldInterpose(Thread* thread);
+gboolean thread_shouldUsePreload(Thread* thread);
 void thread_beginControl(Thread* thread);
 void thread_endControl(Thread* thread);
 Process* thread_getParentProcess(Thread* thread);
 Program* thread_getProgram(Thread* thread);
+Preload* thread_getPreload(Thread* thread);
+
+void thread_enterPreload(Thread* thread);
+void thread_exitPreload(Thread* thread);
 
 #endif /* SHD_THREAD_H_ */

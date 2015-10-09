@@ -30,6 +30,8 @@ struct _Parser {
 
     GHashTable* pluginIDStrings;
     GHashTable* pluginIDRefStrings;
+    GHashTable* preloadIDStrings;
+    GHashTable* preloadIDRefStrings;
     MAGIC_DECLARE;
 };
 
@@ -158,6 +160,81 @@ static GError* _parser_handlePluginAttributes(Parser* parser, const gchar** attr
         if(!g_hash_table_lookup(parser->pluginIDStrings, id->str)) {
             gchar* s = g_strdup(id->str);
             g_hash_table_replace(parser->pluginIDStrings, s, s);
+        }
+    }
+
+    /* clean up */
+    if(id) {
+        g_string_free(id, TRUE);
+    }
+    if(path) {
+        g_string_free(path, TRUE);
+    }
+
+    return error;
+}
+
+static GError* _parser_handlePreloadAttributes(Parser* parser, const gchar** attributeNames, const gchar** attributeValues) {
+    GString* id = NULL;
+    GString* path = NULL;
+
+    GError* error = NULL;
+
+    const gchar **nameCursor = attributeNames;
+    const gchar **valueCursor = attributeValues;
+
+    /* check the attributes */
+    while (!error && *nameCursor) {
+        const gchar* name = *nameCursor;
+        const gchar* value = *valueCursor;
+
+        debug("found attribute '%s=%s'", name, value);
+
+        if(!id && !g_ascii_strcasecmp(name, "id")) {
+            id = g_string_new(value);
+        } else if (!path && !g_ascii_strcasecmp(name, "path")) {
+            path = g_string_new(utility_getHomePath(value));
+        } else {
+            error = g_error_new(G_MARKUP_ERROR, G_MARKUP_ERROR_UNKNOWN_ATTRIBUTE,
+                            "unknown 'preload' attribute '%s'", name);
+        }
+
+        nameCursor++;
+        valueCursor++;
+    }
+
+    /* validate the values */
+    if(!error && (!id || !path)) {
+        error = g_error_new(G_MARKUP_ERROR, G_MARKUP_ERROR_MISSING_ATTRIBUTE,
+                "element 'preload' requires attributes 'id' 'path'");
+    }
+    if(path) {
+        /* make sure the path is absolute */
+        if(!g_path_is_absolute(path->str)) {
+            /* ok, we look in ~/.shadow/plugins */
+            const gchar* home = g_get_home_dir();
+            gchar* oldstr = g_string_free(path, FALSE);
+            gchar* newstr = g_build_path("/", home, ".shadow", "plugins", oldstr, NULL);
+            g_free(oldstr);
+            path = g_string_new(newstr);
+            g_free(newstr);
+        }
+
+        if(!g_file_test(path->str, G_FILE_TEST_EXISTS) || !g_file_test(path->str, G_FILE_TEST_IS_REGULAR)) {
+            error = g_error_new(G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT,
+                    "attribute 'path': '%s' is not a valid path to an existing regular file", path->str);
+        }
+    }
+
+    if(!error) {
+        /* no error, create the action */
+        Action* a = (Action*) loadpreload_new(id, path);
+        action_setPriority(a, 0);
+        _parser_addAction(parser, a);
+
+        if(!g_hash_table_lookup(parser->preloadIDStrings, id->str)) {
+            gchar* s = g_strdup(id->str);
+            g_hash_table_replace(parser->preloadIDStrings, s, s);
         }
     }
 
@@ -349,6 +426,7 @@ static GError* _parser_handleKillAttributes(Parser* parser, const gchar** attrib
 
 static GError* _parser_handleApplicationAttributes(Parser* parser, const gchar** attributeNames, const gchar** attributeValues) {
     GString* plugin = NULL;
+    GString* preload = NULL;
     GString* arguments = NULL;
     guint64 starttime = 0;
     guint64 stoptime = 0;
@@ -367,6 +445,8 @@ static GError* _parser_handleApplicationAttributes(Parser* parser, const gchar**
 
         if(!plugin && !g_ascii_strcasecmp(name, "plugin")) {
             plugin = g_string_new(value);
+        } else if(!preload && !g_ascii_strcasecmp(name, "preload")) {
+            preload = g_string_new(value);
         } else if (!arguments && !g_ascii_strcasecmp(name, "arguments")) {
             arguments = g_string_new(value);
         } else if (!starttime && !g_ascii_strcasecmp(name, "starttime")) {
@@ -394,7 +474,7 @@ static GError* _parser_handleApplicationAttributes(Parser* parser, const gchar**
         /* no error, application configs get added to the node creation event
          * in order to handle nodes with quantity > 1 */
         utility_assert(parser->currentNodeAction);
-        createnodes_addApplication(parser->currentNodeAction, plugin, arguments, starttime, stoptime);
+        createnodes_addApplication(parser->currentNodeAction, plugin, preload, arguments, starttime, stoptime);
 
         (parser->nChildApplications)++;
 
@@ -407,6 +487,9 @@ static GError* _parser_handleApplicationAttributes(Parser* parser, const gchar**
     /* clean up */
     if(plugin) {
         g_string_free(plugin, TRUE);
+    }
+    if(preload) {
+        g_string_free(preload, TRUE);
     }
     if(arguments) {
         g_string_free(arguments, TRUE);
@@ -491,6 +574,8 @@ static void _parser_handleRootStartElement(GMarkupParseContext* context,
     /* check for root-level elements */
     if (!g_ascii_strcasecmp(elementName, "plugin")) {
         *error = _parser_handlePluginAttributes(parser, attributeNames, attributeValues);
+    } else if (!g_ascii_strcasecmp(elementName, "preload")) {
+        *error = _parser_handlePreloadAttributes(parser, attributeNames, attributeValues);
     } else if (!g_ascii_strcasecmp(elementName, "node")) {
         *error = _parser_handleNodeAttributes(parser, attributeNames, attributeValues);
         /* handle internal elements in a sub parser */
@@ -558,7 +643,8 @@ static void _parser_handleRootEndElement(GMarkupParseContext* context,
         }
     } else {
         if(!(!g_ascii_strcasecmp(elementName, "plugin") ||
-                !g_ascii_strcasecmp(elementName, "kill"))) {
+             !g_ascii_strcasecmp(elementName, "preload") ||
+             !g_ascii_strcasecmp(elementName, "kill"))) {
             *error = g_error_new(G_MARKUP_ERROR, G_MARKUP_ERROR_UNKNOWN_ELEMENT,
                             "unknown 'root' child ending element '%s'", elementName);
         }
@@ -593,6 +679,8 @@ Parser* parser_new() {
 
     parser->pluginIDStrings = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     parser->pluginIDRefStrings = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    parser->preloadIDStrings = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    parser->preloadIDRefStrings = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 
     /* we handle the start_element and end_element callbacks, but ignore
      * text, passthrough (comments), and errors

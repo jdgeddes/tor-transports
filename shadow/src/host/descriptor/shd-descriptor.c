@@ -120,6 +120,8 @@ void descriptor_adjustStatus(Descriptor* descriptor, DescriptorStatus status, gb
         }
     }
 
+    debug("adjusting status for %d to %d %d", descriptor->handle, status, doSetBits);
+
     /* tell our listeners their was some activity on this descriptor */
     g_slist_foreach(descriptor->readyListeners, _descriptor_notifyListener, NULL);
 }

@@ -228,6 +228,11 @@ static void _epollwatch_updateStatus(EpollWatch* watch) {
     if((oldFlags & EWF_WRITEABLE) != (watch->flags & EWF_WRITEABLE)) {
         watch->flags |= EWF_WRITECHANGED;
     }
+
+    debug("watch epoll %d writeable %d/%d readable %d/%d (%d) (%d/%d)", watch->event.data.fd,
+            (watch->flags & EWF_WRITEABLE) > 0, (watch->flags & EWF_WAITINGWRITE) > 0,
+            (watch->flags & EWF_READABLE) > 0, (watch->flags & EWF_WAITINGREAD) > 0,
+            watch->flags & EWF_REPORTING, status & DS_WRITABLE, status);
 }
 
 static gboolean _epollwatch_needsNotify(EpollWatch* watch) {
@@ -279,6 +284,8 @@ static void _epoll_check(Epoll* epoll, EpollWatch* watch) {
     /* check status to see if we need to schedule a notification */
     _epollwatch_updateStatus(watch);
     gboolean needsNotify = _epollwatch_needsNotify(watch);
+
+    debug("epoll descriptor %i needs notify %d, watch %d flags %d", epoll->super.handle, needsNotify, watch->event.data.fd, watch->flags);
 
     if(needsNotify) {
         /* we need to report an event to user */
@@ -426,6 +433,8 @@ gint epoll_getEvents(Epoll* epoll, struct epoll_event* eventArray,
             continue;
         }
 
+        debug("checking watch %d", watch->event.data.fd);
+
         /* double check that we should still notify this event */
         _epollwatch_updateStatus(watch);
         if(_epollwatch_needsNotify(watch)) {
@@ -437,6 +446,9 @@ gint epoll_getEvents(Epoll* epoll, struct epoll_event* eventArray,
             eventArray[eventArrayIndex].events |=
                     ((watch->flags & EWF_WRITEABLE) && (watch->flags & EWF_WAITINGWRITE)) ? EPOLLOUT : 0;
             eventArray[eventArrayIndex].events |= (watch->flags & EWF_EDGETRIGGER) ? EPOLLET : 0;
+
+            debug("report event fd %d event %d", eventArray[eventArrayIndex].data.fd,
+                    eventArray[eventArrayIndex].events);
             eventArrayIndex++;
             utility_assert(eventArrayIndex <= eventArrayLength);
 

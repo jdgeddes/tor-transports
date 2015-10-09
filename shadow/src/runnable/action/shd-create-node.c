@@ -36,6 +36,7 @@ struct _CreateNodesAction {
 typedef struct _NodeApplication NodeApplication;
 struct _NodeApplication {
     GQuark pluginID;
+    GQuark preloadID;
     GString* arguments;
     SimulationTime starttime;
     SimulationTime stoptime;
@@ -107,7 +108,7 @@ CreateNodesAction* createnodes_new(GString* name, GString* ip, GString* geocode,
 }
 
 void createnodes_addApplication(CreateNodesAction* action, GString* pluginName,
-        GString* arguments, guint64 starttime, guint64 stoptime)
+        GString* preloadName, GString* arguments, guint64 starttime, guint64 stoptime)
 {
     utility_assert(pluginName && arguments);
     MAGIC_ASSERT(action);
@@ -115,6 +116,9 @@ void createnodes_addApplication(CreateNodesAction* action, GString* pluginName,
     NodeApplication* nodeApp = g_new0(NodeApplication, 1);
 
     nodeApp->pluginID = g_quark_from_string((const gchar*) pluginName->str);
+    if(preloadName) {
+        nodeApp->preloadID = g_quark_from_string((const gchar*) preloadName->str);
+    }
     nodeApp->arguments = g_string_new(arguments->str);
     nodeApp->starttime = (SimulationTime) (starttime * SIMTIME_ONE_SECOND);
     nodeApp->stoptime = (SimulationTime) (stoptime * SIMTIME_ONE_SECOND);
@@ -236,7 +240,7 @@ void createnodes_run(CreateNodesAction* action) {
 
             /* make sure our bootstrap events are set properly */
             worker_setCurrentTime(0);
-            host_addApplication(host, app->pluginID,
+            host_addApplication(host, app->pluginID, app->preloadID,
                     app->starttime, app->stoptime, app->arguments->str);
             worker_setCurrentTime(SIMTIME_INVALID);
 

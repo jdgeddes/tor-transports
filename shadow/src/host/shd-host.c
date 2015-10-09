@@ -214,10 +214,10 @@ EventQueue* host_getEvents(Host* host) {
     return host->events;
 }
 
-void host_addApplication(Host* host, GQuark pluginID,
+void host_addApplication(Host* host, GQuark pluginID, GQuark preloadID,
         SimulationTime startTime, SimulationTime stopTime, gchar* arguments) {
     MAGIC_ASSERT(host);
-    Process* application = process_new(pluginID, startTime, stopTime, arguments);
+    Process* application = process_new(pluginID, preloadID, startTime, stopTime, arguments);
     g_queue_push_tail(host->applications, application);
 
     StartApplicationEvent* event = startapplication_new(application);
@@ -315,6 +315,9 @@ Descriptor* host_lookupDescriptor(Host* host, gint handle) {
 
 NetworkInterface* host_lookupInterface(Host* host, in_addr_t handle) {
     MAGIC_ASSERT(host);
+    if(handle == INADDR_ANY) {
+        return host->defaultInterface;
+    }
     return g_hash_table_lookup(host->interfaces, GUINT_TO_POINTER(handle));
 }
 
@@ -766,6 +769,7 @@ gint host_bindToInterface(Host* host, gint handle, const struct sockaddr* addres
 
     /* make sure we have an interface at that address */
     if(!_host_doesInterfaceExist(host, bindAddress)) {
+        warning("interface does not exist for bin address");
         return EADDRNOTAVAIL;
     }
 
@@ -787,6 +791,7 @@ gint host_bindToInterface(Host* host, gint handle, const struct sockaddr* addres
     } else {
         /* make sure their port is available at that address for this protocol. */
         if(!_host_isInterfaceAvailable(host, bindAddress, type, bindPort)) {
+            warning("interface not available");
             return EADDRINUSE;
         }
     }

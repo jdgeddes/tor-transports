@@ -182,6 +182,8 @@ void tgenio_loopOnce(TGenIO* io) {
     /* collect all events that are ready */
     gint nfds = epoll_wait(io->epollD, epevs, 100, 0);
 
+    tgen_debug("epoll_wait returned %d fds", nfds);
+
     if(nfds == -1) {
         tgen_critical("epoll_wait(): epoll %i returned %i error %i: %s",
                 io->epollD, nfds, errno, g_strerror(errno));
@@ -193,6 +195,7 @@ void tgenio_loopOnce(TGenIO* io) {
 
     /* activate correct component for every descriptor that's ready. */
     for (gint i = 0; i < nfds; i++) {
+        tgen_debug("fd %d events %d", epevs[i].data.fd, epevs[i].events);
         gboolean in = (epevs[i].events & EPOLLIN) ? TRUE : FALSE;
         gboolean out = (epevs[i].events & EPOLLOUT) ? TRUE : FALSE;
         TGenIOChild* child = g_hash_table_lookup(io->children, &epevs[i].data.fd);

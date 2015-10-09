@@ -54,5 +54,8 @@ void worker_heartbeat();
 void worker_storeProgram(Program* prog);
 Program* worker_getProgram(GQuark pluginID);
 Program* worker_getPrivateProgram(GQuark pluginID);
+void worker_storePreload(Preload* preload);
+Preload* worker_getPreload(GQuark preloadID);
+Preload* worker_getPrivatePreload(GQuark preloadID);
 
 #endif /* SHD_WORKER_H_ */

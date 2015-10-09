@@ -9,7 +9,7 @@
 
 #include "shadow.h"
 
-Process* process_new(GQuark pluginID, SimulationTime startTime, SimulationTime stopTime, gchar* arguments);
+Process* process_new(GQuark pluginID, GQuark preloadID, SimulationTime startTime, SimulationTime stopTime, gchar* arguments);
 void process_free(Process* proc);
 
 void process_start(Process* proc);

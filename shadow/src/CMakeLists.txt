@@ -47,6 +47,7 @@ set(shadow_srcs
     host/descriptor/shd-udp.c
     host/shd-process.c
     host/shd-program.c
+    host/shd-preload.c
     host/shd-thread.c
     host/shd-cpu.c
     host/shd-host.c
@@ -58,6 +59,7 @@ set(shadow_srcs
     runnable/action/shd-create-node.c
     runnable/action/shd-kill-engine.c
     runnable/action/shd-load-plugin.c
+    runnable/action/shd-load-preload.c
     runnable/action/shd-load-topology.c
     runnable/event/shd-callback.c
     runnable/event/shd-event.c

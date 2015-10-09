@@ -8,9 +8,12 @@
 
 struct _Process {
     GQuark programID;
+    GQuark preloadID;
 
     Program* prog;
-    ProgramState state;
+    ProgramState progState;
+    Preload* preload;
+    PreloadState preloadState;
     Thread* mainThread;
 
     SimulationTime startTime;
@@ -34,11 +37,12 @@ struct _ProcessExitCallbackData {
     gboolean passArgument;
 };
 
-Process* process_new(GQuark programID, SimulationTime startTime, SimulationTime stopTime, gchar* arguments) {
+Process* process_new(GQuark programID, GQuark preloadID, SimulationTime startTime, SimulationTime stopTime, gchar* arguments) {
     Process* proc = g_new0(Process, 1);
     MAGIC_INIT(proc);
 
     proc->programID = programID;
+    proc->preloadID = preloadID;
     proc->startTime = startTime;
     proc->arguments = g_string_new(arguments);
 
@@ -96,9 +100,33 @@ static gint _process_getArguments(Process* proc, gchar** argvOut[]) {
     return argc;
 }
 
+static void _process_swapInState(Process *proc) {
+    MAGIC_ASSERT(proc);
+    program_swapInState(proc->prog, proc->progState);
+    if(proc->preload) {
+        preload_swapInState(proc->preload, proc->preloadState);
+    }
+}
+
+static void _process_swapOutState(Process *proc) {
+    MAGIC_ASSERT(proc);
+    program_swapOutState(proc->prog, proc->progState);
+    if(proc->preload) {
+        preload_swapOutState(proc->preload, proc->preloadState);
+    }
+}
+
+static void _process_freeState(Process *proc) {
+    MAGIC_ASSERT(proc);
+    program_freeState(proc->prog, proc->progState);
+    if(proc->preload) {
+        preload_freeState(proc->preload, proc->preloadState);
+    }
+}
+
 gboolean process_isRunning(Process* proc) {
     MAGIC_ASSERT(proc);
-    return proc->state != NULL ? TRUE : FALSE;
+    return proc->progState != NULL ? TRUE : FALSE;
 }
 
 void process_start(Process* proc) {
@@ -110,21 +138,41 @@ void process_start(Process* proc) {
 
         /* need to get thread-private program from current worker */
         proc->prog = worker_getPrivateProgram(proc->programID);
-        proc->mainThread = thread_new(proc, proc->prog);
+        if(proc->preloadID) {
+            info("process using '%s' preload", g_quark_to_string(proc->preloadID));
+            proc->preload = worker_getPrivatePreload(proc->preloadID);
+        }
+        proc->mainThread = thread_new(proc, proc->prog, proc->preload);
 
         /* make sure the plugin registered before getting our program state */
         if(!program_isRegistered(proc->prog)) {
-//            program_swapInState(proc->prog, proc->state);
+//            _process_swapInState(proc);
             thread_executeInit(proc->mainThread, program_getInitFunc(proc->prog));
-//            program_swapOutState(proc->prog, proc->state);
+//            _process_swapOutState(proc);
 
             if(!program_isRegistered(proc->prog)) {
                 error("The plug-in '%s' must call shadowlib_register()", program_getName(proc->prog));
             }
         }
 
+        /* make sure the plugin registered before getting our program state */
+        if(proc->preload && !preload_isRegistered(proc->preload)) {
+            info("executing preload %s init function", preload_getName(proc->preload));
+//            _process_swapInState(proc);
+            thread_executePreloadInit(proc->mainThread, preload_getInitFunc(proc->preload));
+//            _process_swapOutState(proc);
+
+            preload_registerResidentState(proc->preload);
+            if(!preload_isRegistered(proc->preload)) {
+                error("The plug-in '%s' must call shadowlib_register()", preload_getName(proc->preload));
+            }
+        }
+
         /* create our default state as we run in our assigned worker */
-        proc->state = program_newDefaultState(proc->prog);
+        proc->progState = program_newDefaultState(proc->prog);
+        if(proc->preload) {
+            proc->preloadState = preload_newDefaultState(proc->preload);
+        }
 
         /* get arguments from the configured software */
         gchar** argv;
@@ -134,9 +182,12 @@ void process_start(Process* proc) {
         gint n = argc;
 
         /* now we will execute in the plugin */
-        program_swapInState(proc->prog, proc->state);
+        _process_swapInState(proc);
+        if(proc->preload) {
+           thread_executePreloadInit(proc->mainThread, preload_getInitFunc(proc->preload));
+        }
         thread_executeNew(proc->mainThread, program_getNewFunc(proc->prog), argc, argv);
-        program_swapOutState(proc->prog, proc->state);
+        _process_swapOutState(proc);
 
         /* free the arguments */
         for(gint i = 0; i < n; i++) {
@@ -152,7 +203,7 @@ void process_stop(Process* proc) {
     /* we only have state if we are running */
     if(process_isRunning(proc)) {
         info("stopping '%s' process", g_quark_to_string(proc->programID));
-        program_swapInState(proc->prog, proc->state);
+        _process_swapInState(proc);
 
         thread_execute(proc->mainThread, program_getFreeFunc(proc->prog));
 
@@ -168,11 +219,11 @@ void process_stop(Process* proc) {
             g_free(exitCallback);
         }
 
-        program_swapOutState(proc->prog, proc->state);
+        _process_swapOutState(proc);
 
         /* free our copy of plug-in resources, and other application state */
-        program_freeState(proc->prog, proc->state);
-        proc->state = NULL;
+        _process_freeState(proc);
+        proc->progState = NULL;
 
         thread_stop(proc->mainThread);
         thread_unref(proc->mainThread);
@@ -185,9 +236,9 @@ void process_notify(Process* proc, Thread* thread) {
 
     /* only notify if we are running */
     if(process_isRunning(proc)) {
-        program_swapInState(proc->prog, proc->state);
+        _process_swapInState(proc);
         thread_execute(thread, program_getNotifyFunc(proc->prog));
-        program_swapOutState(proc->prog, proc->state);
+        _process_swapOutState(proc);
     }
 }
 
@@ -196,9 +247,9 @@ static void _process_callbackTimerExpired(Process* proc, ProcessCallbackData* da
     utility_assert(data);
 
     if(process_isRunning(proc)) {
-        program_swapInState(proc->prog, proc->state);
+        _process_swapInState(proc);
         thread_executeCallback2(proc->mainThread, data->callback, data->data, data->argument);
-        program_swapOutState(proc->prog, proc->state);
+        _process_swapOutState(proc);
     }
 
     g_free(data);

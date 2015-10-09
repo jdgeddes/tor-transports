@@ -96,6 +96,7 @@ typedef struct _Process Process;
 #include "host/descriptor/shd-tcp-scoreboard.h"
 #include "host/descriptor/shd-udp.h"
 #include "host/shd-program.h"
+#include "host/shd-preload.h"
 #include "host/shd-thread.h"
 #include "host/shd-process.h"
 #include "host/shd-network-interface.h"
@@ -118,6 +119,7 @@ typedef struct _Process Process;
 #include "runnable/action/shd-create-node.h"
 #include "runnable/action/shd-kill-engine.h"
 #include "runnable/action/shd-load-plugin.h"
+#include "runnable/action/shd-load-preload.h"
 #include "runnable/action/shd-load-topology.h"
 
 #include "support/shd-logging.h"

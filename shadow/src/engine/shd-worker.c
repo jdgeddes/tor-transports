@@ -28,6 +28,7 @@ struct _Worker {
     Event* cached_event;
 
     GHashTable* privatePrograms;
+    GHashTable* privatePreloads;
 
     MAGIC_DECLARE;
 };
@@ -62,6 +63,7 @@ Worker* worker_new(Slave* slave) {
 
     /* each worker needs a private copy of each plug-in library */
     worker->privatePrograms = g_hash_table_new_full(g_int_hash, g_int_equal, NULL, (GDestroyNotify)program_free);
+    worker->privatePreloads = g_hash_table_new_full(g_int_hash, g_int_equal, NULL, (GDestroyNotify)preload_free);
 
     if(slave_getWorkerCount(slave) <= 1) {
         /* this will cause events to get pushed to this queue instead of host queues */
@@ -78,6 +80,7 @@ void worker_free(Worker* worker) {
 
     /* calls the destroy functions we specified in g_hash_table_new_full */
     g_hash_table_destroy(worker->privatePrograms);
+    g_hash_table_destroy(worker->privatePreloads);
 
     if(worker->serialEventQueue) {
         eventqueue_free(worker->serialEventQueue);
@@ -125,6 +128,25 @@ Program* worker_getPrivateProgram(GQuark pluginID) {
     debug("worker %i using plug-in at %p", worker->thread_id, privateProg);
 
     return privateProg;
+}
+
+Preload* worker_getPrivatePreload(GQuark preloadID) {
+    /* worker has a private plug-in for each preload ID */
+    Worker* worker = _worker_getPrivate();
+    Preload* privatePreload = g_hash_table_lookup(worker->privatePreloads, &preloadID);
+    if(!privatePreload) {
+        /* plug-in has yet to be loaded by this worker. do that now. this call
+         * will copy the plug-in library to the temporary directory, and open
+         * that so each thread can execute in its own memory space.
+         */
+        Preload* preload = slave_getPreload(worker->slave, preloadID);
+        privatePreload = preload_getTemporaryCopy(preload);
+        g_hash_table_replace(worker->privatePreloads, preload_getID(privatePreload), privatePreload);
+    }
+
+    debug("worker %i using preload at %p", worker->thread_id, privatePreload);
+
+    return privatePreload;
 }
 
 static guint _worker_processNode(Worker* worker, Host* node, SimulationTime barrier) {
@@ -445,6 +467,16 @@ void worker_storeProgram(Program* prog) {
 Program* worker_getProgram(GQuark pluginID) {
     Worker* worker = _worker_getPrivate();
     return slave_getProgram(worker->slave, pluginID);
+}
+
+void worker_storePreload(Preload* preload) {
+    Worker* worker = _worker_getPrivate();
+    slave_storePreload(worker->slave, preload);
+}
+
+Preload* worker_getPreload(GQuark preloadID) {
+    Worker* worker = _worker_getPrivate();
+    return slave_getPreload(worker->slave, preloadID);
 }
 
 void worker_setTopology(Topology* topology) {

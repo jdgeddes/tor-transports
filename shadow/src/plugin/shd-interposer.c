@@ -59,6 +59,13 @@
     } \
 }
 
+#define CALL_PRELOAD_FUNC(funcptr, ret, ...) { \
+    Thread* thread = worker_getActiveThread(); \
+    thread_enterPreload(thread); \
+    ret = funcptr(__VA_ARGS__); \
+    thread_exitPreload(thread); \
+}
+
 /* memory allocation family */
 
 typedef void* (*malloc_func)(size_t);
@@ -471,6 +478,53 @@ static inline int shouldForwardToLibC() {
     __sync_fetch_and_sub(&isRecursive, 1);
     return useLibC;
 }
+
+#define shouldForwardToPreload(funcptr) (getPreloadFunction((gchar *)__FUNCTION__, (gpointer*)(&funcptr)))
+
+static inline int getPreloadFunction(gchar *funcName, gpointer *funcPointer) {
+    int usePreload = 0;
+    /* recursive calls always go to Preload */
+    if(!__sync_fetch_and_add(&isRecursive, 1)) {
+        Thread* thread = director.shadowIsLoaded && worker_isAlive() ? worker_getActiveThread() : NULL;
+        /* check if the shadow intercept library is loaded yet, but dont fail if its not */
+        if(thread && thread_shouldUsePreload(thread)) {
+            Preload *preload = thread_getPreload(thread);
+            if(preload) {
+               gpointer func = preload_getFunction(preload, funcName);
+               if(func) {
+                   usePreload = 1;
+                   if(funcPointer) {
+                       *funcPointer = func;
+                   }
+               }
+            }
+        }
+    }
+    __sync_fetch_and_sub(&isRecursive, 1);
+    return usePreload;
+}
+
+extern void *_dl_sym(void *, const char *, void *);
+void *dlsym(void *restrict handle, const char *restrict name) {
+    static void *(*real_dlsym)(void *, const char *) = NULL;
+    if(!real_dlsym) {
+        real_dlsym = _dl_sym(RTLD_NEXT, "dlsym", dlsym);
+    }
+
+    /* if we're not forwarding directy to libc, set handle to 
+     * RTLD_DEFAULT which gets the shadow function */
+    if(!shouldForwardToLibC()) {
+        handle = RTLD_DEFAULT;
+    }
+    void *ret = real_dlsym(handle, name);
+
+    if(handle == RTLD_DEFAULT) {
+        info("found funcptr %p for function %s", ret, name);
+    }
+
+    return ret;
+}
+
 
 enum SystemCallType {
     SCT_BIND, SCT_CONNECT, SCT_GETSOCKNAME, SCT_GETPEERNAME,
@@ -971,6 +1025,13 @@ int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
         return director.libc.epoll_ctl(epfd, op, fd, event);
     }
 
+    epoll_ctl_func funcptr;
+    if(shouldForwardToPreload(funcptr)) {
+        int ret;
+        CALL_PRELOAD_FUNC(funcptr, ret, epfd, op, fd, event);
+        return ret;
+    }
+
     /*
      * initial checks before passing on to node:
      * EINVAL if fd is the same as epfd, or the requested operation op is not
@@ -1002,6 +1063,13 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
     if(shouldForwardToLibC()) {
         ENSURE(libc, "", epoll_wait);
         return director.libc.epoll_wait(epfd, events, maxevents, timeout);
+    }
+
+    epoll_wait_func funcptr;
+    if(shouldForwardToPreload(funcptr)) {
+        int ret;
+        CALL_PRELOAD_FUNC(funcptr, ret, epfd, events, maxevents, timeout);
+        return ret;
     }
 
     /*
@@ -1076,6 +1144,13 @@ int socket(int domain, int type, int protocol) {
     if(shouldForwardToLibC()) {
         ENSURE(libc, "", socket);
         return director.libc.socket(domain, type, protocol);
+    }
+
+    socket_func funcptr;
+    if(shouldForwardToPreload(funcptr)) {
+        int ret;
+        CALL_PRELOAD_FUNC(funcptr, ret, domain, type, protocol);
+        return ret;
     }
 
     /* we only support non-blocking sockets, and require
@@ -1184,6 +1259,14 @@ int bind(int fd, const struct sockaddr* addr, socklen_t len)  {
         return director.libc.bind(fd, addr, len);
     }
 
+    bind_func funcptr;
+    if(shouldForwardToPreload(funcptr)) {
+        int ret;
+        CALL_PRELOAD_FUNC(funcptr, ret, fd, addr, len);
+        return ret;
+    }
+
+
     if((addr->sa_family == AF_INET && len < sizeof(struct sockaddr_in)) ||
             (addr->sa_family == AF_UNIX && len < sizeof(struct sockaddr_un))) {
         return EINVAL;
@@ -1207,6 +1290,13 @@ int connect(int fd, const struct sockaddr* addr, socklen_t len)  {
         return director.libc.connect(fd, addr, len);
     }
 
+    connect_func funcptr;
+    if(shouldForwardToPreload(funcptr)) {
+        int ret;
+        CALL_PRELOAD_FUNC(funcptr, ret, fd, addr, len);
+        return ret;
+    }
+
     if((addr->sa_family == AF_INET && len < sizeof(struct sockaddr_in)) ||
             (addr->sa_family == AF_UNIX && len < sizeof(struct sockaddr_un))) {
         return EINVAL;
@@ -1228,6 +1318,13 @@ ssize_t send(int fd, const void *buf, size_t n, int flags) {
     if(shouldForwardToLibC()) {
         ENSURE(libc, "", send);
         return director.libc.send(fd, buf, n, flags);
+    }
+
+    send_func funcptr;
+    if(shouldForwardToPreload(funcptr)) {
+        int ret;
+        CALL_PRELOAD_FUNC(funcptr, ret, fd, buf, n, flags);
+        return ret;
     }
 
     Host* host = _interposer_switchInShadowContext();
@@ -1266,6 +1363,13 @@ ssize_t recv(int fd, void *buf, size_t n, int flags) {
     if(shouldForwardToLibC()) {
         ENSURE(libc, "", recv);
         return director.libc.recv(fd, buf, n, flags);
+    }
+
+    recv_func funcptr;
+    if(shouldForwardToPreload(funcptr)) {
+        int ret;
+        CALL_PRELOAD_FUNC(funcptr, ret, fd, buf, n, flags);
+        return ret;
     }
 
     Host* host = _interposer_switchInShadowContext();
@@ -1492,6 +1596,13 @@ int listen(int fd, int n) {
         return director.libc.listen(fd, n);
     }
 
+    listen_func funcptr;
+    if(shouldForwardToPreload(funcptr)) {
+        int ret;
+        CALL_PRELOAD_FUNC(funcptr, ret, fd, n);
+        return ret;
+    }
+
     /* check if this is a socket */
     Host* node = _interposer_switchInShadowContext();
     if(!host_isShadowDescriptor(node, fd)){
@@ -1516,6 +1627,13 @@ int accept(int fd, struct sockaddr* addr, socklen_t* addr_len)  {
     if(shouldForwardToLibC()) {
         ENSURE(libc, "", accept);
         return director.libc.accept(fd, addr, addr_len);
+    }
+
+    accept_func funcptr;
+    if(shouldForwardToPreload(funcptr)) {
+        int ret;
+        CALL_PRELOAD_FUNC(funcptr, ret, fd, addr, addr_len);
+        return ret;
     }
 
     Host* node = _interposer_switchInShadowContext();
@@ -1589,6 +1707,13 @@ ssize_t read(int fd, void *buff, size_t numbytes) {
         return director.libc.read(fd, buff, numbytes);
     }
 
+    read_func funcptr;
+    if(shouldForwardToPreload(funcptr)) {
+        int ret;
+        CALL_PRELOAD_FUNC(funcptr, ret, fd, buff, numbytes);
+        return ret;
+    }
+
     gssize ret = 0;
     Host* host = _interposer_switchInShadowContext();
 
@@ -1621,6 +1746,13 @@ ssize_t write(int fd, const void *buff, size_t n) {
     if(shouldForwardToLibC()) {
         ENSURE(libc, "", write);
         return director.libc.write(fd, buff, n);
+    }
+
+    write_func funcptr;
+    if(shouldForwardToPreload(funcptr)) {
+        int ret;
+        CALL_PRELOAD_FUNC(funcptr, ret, fd, buff, n);
+        return ret;
     }
 
     gssize ret = 0;
@@ -1755,6 +1887,13 @@ int close(int fd) {
     if(shouldForwardToLibC()) {
         ENSURE(libc, "", close);
         return director.libc.close(fd);
+    }
+
+    close_func funcptr;
+    if(shouldForwardToPreload(funcptr)) {
+        int ret;
+        CALL_PRELOAD_FUNC(funcptr, ret, fd);
+        return ret;
     }
 
     /* check if this is a socket */
@@ -2592,7 +2731,7 @@ const struct addrinfo *hints, struct addrinfo **res) {
                 /* the node string is not a dots-and-decimals string, try it as a hostname */
                 address = dns_resolveNameToAddress(worker_getDNS(), node);
             }
-        } else {
+        } else if(ip != INADDR_ANY) {
             /* we got an ip from the string, so lookup by the ip */
             address = dns_resolveIPToAddress(worker_getDNS(), ip);
         }
@@ -2600,7 +2739,7 @@ const struct addrinfo *hints, struct addrinfo **res) {
         if(address) {
             /* found it */
             ip = address_toNetworkIP(address);
-        } else {
+        } else if(ip != INADDR_ANY) {
             /* at this point it is an error */
             ip = INADDR_NONE;
             errno = EINVAL;

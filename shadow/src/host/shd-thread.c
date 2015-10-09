@@ -8,14 +8,16 @@
 
 typedef enum _ThreadContext ThreadContext;
 enum _ThreadContext {
-    TCTX_NONE, TCTX_SHADOW, TCTX_PLUGIN, TCTX_PTH
+    TCTX_NONE, TCTX_SHADOW, TCTX_PLUGIN, TCTX_PTH, TCTX_PRELOAD,
 };
 
 struct _Thread {
     ThreadContext activeContext;
+    ThreadContext previousContext;
 
     Process* parentProcess;
     Program* program;
+    Preload* preload;
 
     GTimer* delayTimer;
 
@@ -58,6 +60,9 @@ static int _thread_interface_register(PluginNewInstanceFunc new, PluginNotifyFun
 
     thread->activeContext = TCTX_SHADOW;
     program_registerResidentState(thread->program, new, free, notify);
+    /*if(thread->preload) {*/
+        /*preload_registerResidentState(thread->preload);*/
+    /*}*/
     thread->activeContext = TCTX_PLUGIN;
 
     return TRUE;
@@ -161,12 +166,13 @@ ShadowFunctionTable interfaceFunctionTable = {
 
 /**************************************************************/
 
-Thread* thread_new(Process* parentProc, Program* prog) {
+Thread* thread_new(Process* parentProc, Program* prog, Preload* preload) {
     Thread* thread = g_new0(Thread, 1);
     MAGIC_INIT(thread);
 
     thread->parentProcess = parentProc;
     thread->program = prog;
+    thread->preload = preload;
 
     /* timer for CPU delay measurements */
     thread->delayTimer = g_timer_new();
@@ -272,6 +278,24 @@ void thread_executeInit(Thread* thread, ShadowPluginInitializeFunc init) {
     _thread_handleTimerResult(thread, elapsed);
 }
 
+void thread_executePreloadInit(Thread* thread, PreloadInitFunc init) {
+    MAGIC_ASSERT(thread);
+    utility_assert(init);
+    utility_assert(thread_isRunning(thread));
+
+    g_timer_start(thread->delayTimer);
+
+    worker_setActiveThread(thread);
+    thread->activeContext = TCTX_PRELOAD;
+    init();
+    thread->activeContext = TCTX_SHADOW;
+    worker_setActiveThread(NULL);
+
+    /* no need to call stop */
+    gdouble elapsed = g_timer_elapsed(thread->delayTimer, NULL);
+    _thread_handleTimerResult(thread, elapsed);
+}
+
 void thread_executeCallback2(Thread* thread, CallbackFunc callback, gpointer data, gpointer callbackArgument) {
     MAGIC_ASSERT(thread);
     utility_assert(callback);
@@ -309,16 +333,42 @@ void thread_executeExitCallback(Thread* thread, void (*callback)(int , void *), 
 gboolean thread_shouldInterpose(Thread* thread) {
     MAGIC_ASSERT(thread);
     utility_assert(thread_isRunning(thread));
-    return thread->activeContext == TCTX_PLUGIN ? TRUE : FALSE;
+    if(thread->activeContext == TCTX_PLUGIN ||
+       thread->activeContext == TCTX_PRELOAD) {
+        return TRUE;
+    }
+    return FALSE;
+}
+
+gboolean thread_shouldUsePreload(Thread* thread) {
+    MAGIC_ASSERT(thread);
+    utility_assert(thread_isRunning(thread));
+    if(thread->activeContext == TCTX_PRELOAD) {
+        return FALSE;
+    }
+    return TRUE;
 }
 
 void thread_beginControl(Thread* thread) {
     MAGIC_ASSERT(thread);
     utility_assert(thread_isRunning(thread));
+    thread->previousContext = thread->activeContext;
     thread->activeContext = TCTX_SHADOW;
 }
 
 void thread_endControl(Thread* thread) {
+    MAGIC_ASSERT(thread);
+    utility_assert(thread_isRunning(thread));
+    thread->activeContext = thread->previousContext;
+}
+
+void thread_enterPreload(Thread* thread) {
+    MAGIC_ASSERT(thread);
+    utility_assert(thread_isRunning(thread));
+    thread->activeContext = TCTX_PRELOAD;
+}
+
+void thread_exitPreload(Thread* thread) {
     MAGIC_ASSERT(thread);
     utility_assert(thread_isRunning(thread));
     thread->activeContext = TCTX_PLUGIN;
@@ -334,4 +384,10 @@ Program* thread_getProgram(Thread* thread) {
     MAGIC_ASSERT(thread);
     utility_assert(thread_isRunning(thread));
     return thread->program;
+}
+
+Preload* thread_getPreload(Thread* thread) {
+    MAGIC_ASSERT(thread);
+    utility_assert(thread_isRunning(thread));
+    return thread->preload;
 }

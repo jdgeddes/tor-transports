@@ -28,6 +28,7 @@ struct _Slave {
     GHashTable* hosts;
 
     GHashTable* programs;
+    GHashTable* preloads;
 
     /* if multi-threaded, we use worker thread */
     CountDownLatch* processingLatch;
@@ -100,6 +101,7 @@ Slave* slave_new(Master* master, Configuration* config, guint randomSeed) {
 
     slave->hosts = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, NULL);
     slave->programs = g_hash_table_new_full(g_int_hash, g_int_equal, NULL, (GDestroyNotify)program_free);
+    slave->preloads = g_hash_table_new_full(g_int_hash, g_int_equal, NULL, (GDestroyNotify)preload_free);
 
     slave->dns = dns_new();
 
@@ -128,6 +130,7 @@ void slave_free(Slave* slave) {
     }
 
     g_hash_table_destroy(slave->programs);
+    g_hash_table_destroy(slave->preloads);
 
     g_mutex_clear(&(slave->lock));
     g_mutex_clear(&(slave->pluginInitLock));
@@ -192,6 +195,16 @@ void slave_storeProgram(Slave* slave, Program* prog) {
 Program* slave_getProgram(Slave* slave, GQuark pluginID) {
     MAGIC_ASSERT(slave);
     return g_hash_table_lookup(slave->programs, &pluginID);
+}
+
+void slave_storePreload(Slave* slave, Preload* preload) {
+    MAGIC_ASSERT(slave);
+    g_hash_table_insert(slave->preloads, preload_getID(preload), preload);
+}
+
+Preload* slave_getPreload(Slave* slave, GQuark preloadID) {
+    MAGIC_ASSERT(slave);
+    return g_hash_table_lookup(slave->preloads, &preloadID);
 }
 
 DNS* slave_getDNS(Slave* slave) {

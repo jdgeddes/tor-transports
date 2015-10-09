@@ -28,7 +28,7 @@ void host_unlock(Host* host);
 
 EventQueue* host_getEvents(Host* host);
 
-void host_addApplication(Host* host, GQuark pluginID,
+void host_addApplication(Host* host, GQuark pluginID, GQuark preloadID,
         SimulationTime startTime, SimulationTime stopTime, gchar* arguments);
 void host_startApplication(Host* host, Process* application);
 void host_stopApplication(Host* host, Process* application);

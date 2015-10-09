@@ -196,6 +196,7 @@ UDP* udp_new(gint handle, guint receiveBufferSize, guint sendBufferSize) {
 
     /* we are immediately active because UDP doesnt wait for accept or connect */
     descriptor_adjustStatus((Descriptor*) udp, DS_ACTIVE|DS_WRITABLE, TRUE);
+    /*descriptor_adjustStatus((Descriptor*) udp, DS_ACTIVE, TRUE);*/
 
     return udp;
 }

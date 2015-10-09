@@ -56,7 +56,7 @@ static void _tgendriver_log(ShadowLogLevel level, const gchar* functionName, con
 }
 
 gint main(gint argc, gchar *argv[]) {
-    GLogLevelFlags filter = G_LOG_LEVEL_MESSAGE;
+    GLogLevelFlags filter = G_LOG_LEVEL_DEBUG;
     g_log_set_default_handler((GLogFunc)_tgendriver_logHandler, &filter);
 
     /* create the new state according to user inputs */
