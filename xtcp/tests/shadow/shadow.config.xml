@@ -30,14 +30,15 @@
 ]]></topology>
   <kill time="1200"/>
   <plugin id="tgen" path="~/.shadow/plugins/libshadow-plugin-tgen.so"/>
+  <preload id="utp" path="~/research/tor-transports/xtcp/libxtcp_utp.so"/>
   <node id="server" quantity="1">
-    <application plugin="tgen" starttime="1" arguments="tgen.server.graphml.xml"/>
+    <application plugin="tgen" preload="utp" starttime="1" arguments="tgen.server.graphml.xml"/>
   </node>
-  <node id="webclient" quantity="1">
-    <application plugin="tgen" starttime="2" arguments="tgen.webclient.graphml.xml"/>
-  </node>
-  <!--<node id="bulkclient" quantity="5">-->
-    <!--<application plugin="tgen" starttime="2" arguments="tgen.bulkclient.graphml.xml"/>-->
+  <!--<node id="webclient" quantity="1">-->
+    <!--<application plugin="tgen" starttime="2" arguments="tgen.webclient.graphml.xml"/>-->
   <!--</node>-->
+  <node id="bulkclient" quantity="1">
+    <application plugin="tgen" preload="utp" starttime="2" arguments="tgen.bulkclient.graphml.xml"/>
+  </node>
 </shadow>
 
