@@ -1,0 +1,3 @@
+[submodule "xtcp/libs/libutp"]
+	path = xtcp/libs/libutp
+	url = https://github.com/bittorrent/libutp
