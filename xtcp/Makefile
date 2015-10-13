@@ -11,11 +11,11 @@ OBJS = $(SRCS:.c=.o)
 all: ${LIBS}
 
 libxtcp_template.so: xtcp_template.o xtcp_util.o
-	$(CC) ${LDFLAGS} -o $@ $^
+	$(CC) ${LDFLAGS} -o $@ $^ ${LDFLAGS}
 
 libxtcp_utp.so: xtcp_utp.o xtcp_util.o
 	cd ./libs/libutp/ && make
-	$(CC) ${LDFLAGS} -o $@ $^ -L./libs/libutp -lutp
+	$(CC) ${LDFLAGS} -o $@ $^ -L${HOME}/.local/lib/ -lutp ${LDFLAGS}
 
 $(SRCS:.c=.d):%.d:%.c
 		$(CC) $(CFLAGS) -MM $< >$@
