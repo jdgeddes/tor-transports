@@ -113,13 +113,18 @@ ssize_t read(int fd, void *buf, size_t count) {
 }
 
 int close(int fd) {
-    xtcp_debug("close fd %d", fd);
+    /*xtcp_debug("close fd %d", fd);*/
     return global_data.libc.close(fd);
 }
 
 int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) {
     xtcp_debug("epoll_wait on %d", epfd);
-    return global_data.libc.epoll_wait(epfd, events, maxevents, timeout);
+    int i;
+    int nfds = global_data.libc.epoll_wait(epfd, events, maxevents, timeout);
+    for(i = 0; i < nfds; i++) {
+        xtcp_debug("fd %d has events %d", events[i].data.fd, events[i].events);
+    }
+    return nfds;
 }
 
 int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *expectfds, struct timeval *timeout) {
