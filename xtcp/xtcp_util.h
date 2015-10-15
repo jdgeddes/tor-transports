@@ -39,5 +39,8 @@ hashtable_t *hashtable_create();
 void *hashtable_lookup(hashtable_t *table, int key);
 void *hashtable_insert(hashtable_t *table, int key, void *value);
 void *hashtable_remove(hashtable_t *table, int key);
+int *hashtable_getkeys(hashtable_t *table);
+void **hashtable_getvalues(hashtable_t *table);
+
 
 #endif

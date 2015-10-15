@@ -24,14 +24,15 @@ typedef int (*SocketFunc)(int domain, int type, int protocol);
 typedef int (*BindFunc)(int sockfd, const struct sockaddr* addr, socklen_t addr_len);
 typedef int (*ListenFunc)(int sockfd, int backlog);
 typedef int (*AcceptFunc)(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
-typedef int (*EpollWaitFunc)(int epfd, struct epoll_event *events, int maxevents, int timeout);
 typedef int (*WriteFunc)(int fd, const void *buf, size_t count);
 typedef int (*ReadFunc)(int fd, void *buf, size_t count);
 typedef int (*ConnectFunc)(int sockfd, const struct sockaddr *address, socklen_t address_len);
 typedef ssize_t (*SendFunc)(int sockfd, const void *buf, size_t len, int flags);
 typedef ssize_t (*RecvFunc)(int sockfd, void *buf, size_t len, int flags);
+typedef int (*CloseFunc)(int fd);
+typedef int (*EpollCtlFunc)(int epfd, int op, int fd, struct epoll_event *event);
+typedef int (*EpollWaitFunc)(int epfd, struct epoll_event *events, int maxevents, int timeout);
 typedef int (*SelectFunc)(int nfds, fd_set *readfds, fd_set *writefds,
         fd_set *exceptfds, struct timeval *timeout);
-typedef int (*CloseFunc)(int fd);
 
 #endif

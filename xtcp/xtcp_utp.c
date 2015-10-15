@@ -37,14 +37,15 @@ typedef struct libc_func_s {
     BindFunc bind;
     ListenFunc listen;
     AcceptFunc accept;
-    EpollWaitFunc epoll_wait;
     WriteFunc write;
     ReadFunc read;
     ConnectFunc connect;
     SendFunc send;
     RecvFunc recv;
-    SelectFunc select;
     CloseFunc close;
+    EpollCtlFunc epoll_ctl;
+    EpollWaitFunc epoll_wait;
+    SelectFunc select;
 } libc_func_t;
 
 typedef struct global_data_s {
@@ -75,14 +76,15 @@ void init_lib() {
     SETSYM_OR_FAIL(bind);
     SETSYM_OR_FAIL(listen);
     SETSYM_OR_FAIL(accept);
-    SETSYM_OR_FAIL(epoll_wait);
     SETSYM_OR_FAIL(write);
     SETSYM_OR_FAIL(read);
     SETSYM_OR_FAIL(connect);
     SETSYM_OR_FAIL(send);
     SETSYM_OR_FAIL(recv);
-    SETSYM_OR_FAIL(select);
     SETSYM_OR_FAIL(close);
+    SETSYM_OR_FAIL(epoll_ctl);
+    SETSYM_OR_FAIL(epoll_wait);
+    SETSYM_OR_FAIL(select);
 
     global_data.sockfd_to_context = hashtable_create();
     global_data.sockfd_to_socket = hashtable_create();
@@ -139,6 +141,7 @@ uint64 utp_on_state_change_cb(utp_callback_arguments *a) {
 		case UTP_STATE_EOF:
 			xtcp_info("[utp] received EOF from socket; closing\n");
             sdata->closed = 1;
+            utp_close(a->socket);
 			break;
 
 		case UTP_STATE_DESTROYING:
@@ -244,17 +247,17 @@ utp_context *utp_create_context(int sockfd, int nonblock) {
 int utp_read_context(utp_context *ctx, utp_context_data_t *ctxdata) {
     assert(ctx && ctxdata);
 
-    struct pollfd p[1];
-    p[0].fd = ctxdata->sockfd;
-    p[0].events = POLLIN;
+    /*struct pollfd p[1];*/
+    /*p[0].fd = ctxdata->sockfd;*/
+    /*p[0].events = POLLIN;*/
 
-    if(!poll(p, 1, 0)) {
-        return 0;
-    }
+    /*if(!poll(p, 1, 0)) {*/
+        /*return 0;*/
+    /*}*/
 
-    if(!(p[0].revents & POLLIN)) {
-        return 0;
-    }
+    /*if(!(p[0].revents & POLLIN)) {*/
+        /*return 0;*/
+    /*}*/
 
     char buf[4096];
     struct sockaddr_in addr;
@@ -373,7 +376,7 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     }
 
     /* create new child socket for the new connection */
-    int type = SOCK_STREAM;
+    int type = SOCK_DGRAM;
     if(ctxdata->nonblock) {
         type |= SOCK_NONBLOCK;
     }
@@ -382,8 +385,6 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 
     utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
     sdata->sockfd = newsockfd;
-
-    xtcp_debug("new socket %d for listen sockfd %d", newsockfd, sockfd);
 
     hashtable_insert(global_data.sockfd_to_socket, newsockfd, s);
 
@@ -435,7 +436,7 @@ int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
     return 0;
 }
 
-ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
+ssize_t mysend(int sockfd, const void *buf, size_t len, int flags) {
     xtcp_debug("send %d bytes on socket %d", len, sockfd);
 
     utp_socket *s = (utp_socket *)hashtable_lookup(global_data.sockfd_to_socket, sockfd);
@@ -470,7 +471,11 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
     return bytes;
 }
 
-ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
+ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
+    return mysend(sockfd, buf, len, flags);
+}
+
+ssize_t myrecv(int sockfd, void *buf, size_t len, int flags) {
     xtcp_debug("recv %d bytes on socket %d", len, sockfd);
 
     utp_socket *s = (utp_socket *)hashtable_lookup(global_data.sockfd_to_socket, sockfd);
@@ -505,6 +510,10 @@ ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
     return len;
 }
 
+ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
+    return myrecv(sockfd, buf, len, flags);
+}
+
 ssize_t write(int fd, const void *buf, size_t count) {
     /*xtcp_debug("write %d bytes on fd %d", count, fd);*/
     
@@ -513,7 +522,7 @@ ssize_t write(int fd, const void *buf, size_t count) {
         return global_data.libc.write(fd, buf, count);
     }
 
-    return send(fd, buf, count, 0);
+    return mysend(fd, buf, count, 0);
 }
 
 ssize_t read(int fd, void *buf, size_t count) {
@@ -524,33 +533,56 @@ ssize_t read(int fd, void *buf, size_t count) {
         return global_data.libc.read(fd, buf, count);
     }
 
-    return recv(fd, buf, count, 0);
+    return myrecv(fd, buf, count, 0);
 }
 
 int close(int fd) {
-    /*xtcp_debug("close fd %d", fd);*/
-
+    utp_context *ctx = (utp_context *)hashtable_lookup(global_data.sockfd_to_socket, fd);
     utp_socket *s = (utp_socket *)hashtable_lookup(global_data.sockfd_to_socket, fd);
-    if(s) {
-        xtcp_info("closing socket %d", fd);
-        hashtable_remove(global_data.sockfd_to_socket, fd);
-        utp_close(s);
+    if(!s) {
+        return global_data.libc.close(fd);
     }
 
-    return global_data.libc.close(fd);
+    xtcp_info("closing socket %d", fd);
+    if(ctx) {
+        hashtable_remove(global_data.sockfd_to_context, fd);
+    }
+    hashtable_remove(global_data.sockfd_to_socket, fd);
+    utp_close(s);
+
+    return 0;
 }
 
 /*
  * Poll/Select functions
  */
+int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
+    xtcp_debug("epoll_ctl epfd %d op %d fd %d", epfd, op, fd);
+    utp_context *ctx = (utp_context *)hashtable_lookup(global_data.sockfd_to_context, fd);
+    utp_socket *s = (utp_socket *)hashtable_lookup(global_data.sockfd_to_socket, fd);
+    if(ctx && event) {
+        event->events &= ~EPOLLOUT;
+    }
+    if(!ctx && s && event) {
+        event->events &= ~(EPOLLIN | EPOLLOUT);
+    }
+    return global_data.libc.epoll_ctl(epfd, op, fd, event);    
+}
+
 int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) {
+    xtcp_debug("epoll_wait on ep %d", epfd);
+    
     struct epoll_event *evs = (struct epoll_event *)malloc(maxevents * sizeof(struct epoll_event));
     int nevents = global_data.libc.epoll_wait(epfd, evs, maxevents, timeout);
+
+    xtcp_debug("epoll_wait returned %d fds", nevents);
 
     int i, nfds = 0;
     for(i = 0; i < nevents; i++) {
         int fd = evs[i].data.fd;
         int ev = evs[i].events;
+
+        xtcp_debug("fd %d has events %d", fd, ev);
 
         utp_context *ctx = (utp_context *)hashtable_lookup(global_data.sockfd_to_context, fd);
         if(ctx) {
@@ -560,7 +592,8 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
                 return -1;
             }
 
-            utp_read_context(ctx, ctxdata);
+            if(utp_read_context(ctx, ctxdata) < 0) {
+            }
 
             if(queue_length(ctxdata->socketq) > 0) {
                 events[nfds].data.fd = fd;
@@ -569,37 +602,42 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
             }
 
             utp_check_timeouts(ctx);
-        }
-
-        utp_socket *s = (utp_socket *)hashtable_lookup(global_data.sockfd_to_socket, fd);
-        if(s) {
-            utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
-            if(!sdata) {
-                xtcp_error("no utp socket for socket %d", fd);
-                return -1;
-            }
-
-            ev = 0;
-            if(buffer_length(sdata->readbuf) > 0) {
-                ev |= EPOLLIN;
-            }
-            if(sdata->writeable) {
-                ev |= EPOLLOUT;
-            }
-            if(ev) {
-                events[nfds].data.fd = fd;
-                events[nfds].events = ev;
-                nfds++;
-            }
-        }
-
-        if(!ctx && !s) {
+        } else if(!hashtable_lookup(global_data.sockfd_to_socket, fd)) {
             memcpy(&events[nfds], &evs[i], sizeof(struct epoll_event));
             nfds++;
         }
     }
 
+    int idx = 0;
+    void **sockets = hashtable_getvalues(global_data.sockfd_to_socket);
+    while(sockets[idx]) {
+        utp_socket *s = (utp_socket *)sockets[idx];
+        utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
+        if(!sdata) {
+            xtcp_error("no utp socket for socket %p", s);
+            return -1;
+        }
+
+        int ev = 0;
+        if(buffer_length(sdata->readbuf) > 0) {
+            ev |= EPOLLIN;
+        }
+        if(sdata->writeable) {
+            ev |= EPOLLOUT;
+        }
+        xtcp_debug("socket %d has event %d", sdata->sockfd, ev);
+        if(ev) {
+            events[nfds].data.fd = sdata->sockfd;
+            events[nfds].events = ev;
+            nfds++;
+        }
+
+        idx++;
+    }
+
     free(evs);
+
+    xtcp_debug("returning %d events", nfds);
 
     return nfds;
 }

@@ -93,27 +93,31 @@ int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
 }
 
 ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
-    xtcp_debug("send %d bytes on socket %d", len, sockfd);
-    return global_data.libc.send(sockfd, buf, len, flags);
+    ssize_t ret = global_data.libc.send(sockfd, buf, len, flags);
+    xtcp_debug("send %lu bytes on socket %d", ret, sockfd);
+    return ret;
 }
 
 ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
-    xtcp_debug("recv %d bytes on socket %d", len, sockfd);
-    return global_data.libc.recv(sockfd, buf, len, flags);
+    ssize_t ret = global_data.libc.recv(sockfd, buf, len, flags);
+    xtcp_debug("recv %d bytes on socket %d", ret, sockfd);
+    return ret;
 }
 
 ssize_t write(int fd, const void *buf, size_t count) {
-    xtcp_debug("write %d bytes on fd %d", count, fd);
-    return global_data.libc.write(fd, buf, count);
+    ssize_t ret = global_data.libc.write(fd, buf, count);
+    xtcp_debug("write %d bytes on fd %d", ret, fd);
+    return ret;
 }
 
 ssize_t read(int fd, void *buf, size_t count) {
-    xtcp_debug("read %d bytes on fd %d", count, fd);
-    return global_data.libc.read(fd, buf, count);
+    ssize_t ret = global_data.libc.read(fd, buf, count);
+    xtcp_debug("read %d bytes on fd %d", ret, fd);
+    return ret;
 }
 
 int close(int fd) {
-    /*xtcp_debug("close fd %d", fd);*/
+    xtcp_debug("close fd %d", fd);
     return global_data.libc.close(fd);
 }
 

@@ -8,6 +8,7 @@
 #include <inttypes.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <assert.h>
 #include "xtcp_util.h"
 
 #define HT_SIZE 1024
@@ -30,10 +31,12 @@ struct hashtable_entry_s {
     int key;
     void* value;
     hashtable_entry_t *prev, *next;
+    hashtable_entry_t *global_prev, *global_next;
 };
 
 struct hashtable_s {
     hashtable_entry_t *entries[HT_SIZE];
+    hashtable_entry_t *head, *tail;
     int size;
 };
 
@@ -97,6 +100,9 @@ void xtcp_log(XTCPLogLevel log_level, const char *filename, const char *function
     fprintf(logfp, "\n");
 }
 
+/*
+ * queue functions
+ */
 
 void queue_push(queue_t **head, void *data) {
     queue_t *item = (queue_t *)malloc(sizeof(*item));
@@ -155,6 +161,7 @@ void queue_free(queue_t *head) {
 /*
  * Buffer functions
  */
+
 buffer_t *buffer_new() {
     buffer_t *buffer = (buffer_t *)malloc(sizeof(*buffer));
     memset(buffer, 0, sizeof(*buffer));
@@ -254,12 +261,24 @@ void *hashtable_insert(hashtable_t *table, int key, void *value) {
     entry->key = key;
     entry->value = value;
 
+    /* finx the bucket to add the entry to */
     int idx = _hashint(key) % HT_SIZE;
     entry->next = table->entries[idx];
     if(entry->next) {
         entry->next->prev = entry;
     }
     table->entries[idx] = entry;
+
+    /* add it to the global list of entries */
+    if(!table->head) {
+        table->head = table->tail = entry;
+    } else {
+        table->tail->global_next = entry;
+        entry->global_prev = table->tail;
+        table->tail = entry;
+    }
+
+    table->size++;
 
     return NULL;
 }    
@@ -281,10 +300,57 @@ void *hashtable_remove(hashtable_t *table, int key) {
         table->entries[idx] = NULL;
     }
 
+    if(table->head == entry) {
+        table->head = entry->global_next;
+    }
+    if(table->tail == entry) {
+        table->tail = entry->global_prev;
+    }
+    if(entry->global_prev) {
+        entry->global_prev->global_next = entry->global_next;
+    }
+    if(entry->global_next) {
+        entry->global_next->global_prev = entry->global_prev;
+    }
+
     void *value = entry->value;
     free(entry);
+
+    table->size--;
 
     return value;
 }
 
+int *hashtable_getkeys(hashtable_t *table) {
+    assert(table);
 
+    int *keys = (void *)malloc(sizeof(int) * (table->size + 1));
+    memset(keys, 0, sizeof(void*) * (table->size + 1));
+
+    int idx = 0;
+    hashtable_entry_t *iter = table->head;
+    while(iter) {
+        keys[idx] = iter->key;
+        idx++;
+        iter = iter->next;
+    }
+    
+    return keys;
+}
+
+void **hashtable_getvalues(hashtable_t *table) {
+    assert(table);
+
+    void **values = (void *)malloc(sizeof(void*) * (table->size + 1));
+    memset(values, 0, sizeof(void*) * (table->size + 1));
+
+    int idx = 0;
+    hashtable_entry_t *iter = table->head;
+    while(iter) {
+        values[idx] = iter->value;
+        idx++;
+        iter = iter->next;
+    }
+    
+    return values;
+}
