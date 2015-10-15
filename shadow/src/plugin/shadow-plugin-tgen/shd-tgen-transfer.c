@@ -213,7 +213,7 @@ static gboolean _tgentransfer_getLine(TGenTransfer* transfer) {
         } else if(bytes == 1) {
             transfer->bytes.totalRead += 1;
             if(c == '\n') {
-                tgen_info("finished receiving line: '%s'", transfer->readBuffer->str);
+                tgen_debug("finished receiving line: '%s'", transfer->readBuffer->str);
                 return TRUE;
             }
             g_string_append_c(transfer->readBuffer, c);
@@ -242,7 +242,7 @@ static void _tgentransfer_readCommand(TGenTransfer* transfer) {
             g_assert(!transfer->remoteName);
             transfer->remoteName = g_strdup(parts[0]);
 
-            tgen_info("read command line '%s'", line);
+            tgen_debug("read command line '%s'", line);
 
             transfer->remoteID = (gsize)g_ascii_strtoull(parts[1], NULL, 10);
             if(transfer->remoteID == 0) {
@@ -417,7 +417,7 @@ static void _tgentransfer_readChecksum(TGenTransfer* transfer) {
 static void _tgentransfer_onReadable(TGenTransfer* transfer) {
     TGEN_ASSERT(transfer);
 
-    tgen_info("active transfer %s is readable", _tgentransfer_toString(transfer));
+    tgen_debug("active transfer %s is readable", _tgentransfer_toString(transfer));
     gsize startBytes = transfer->bytes.totalRead;
 
     /* first check if we need to read a command from the other end */
@@ -603,7 +603,7 @@ static void _tgentransfer_writeChecksum(TGenTransfer* transfer) {
 static void _tgentransfer_onWritable(TGenTransfer* transfer) {
     TGEN_ASSERT(transfer);
 
-    tgen_info("active transfer %s is writable", _tgentransfer_toString(transfer));
+    tgen_debug("active transfer %s is writable", _tgentransfer_toString(transfer));
     gsize startBytes = transfer->bytes.totalWrite;
 
     /* first check if we need to send a command to the other end */
@@ -755,8 +755,6 @@ static TGenEvent _tgentransfer_runTransportEventLoop(TGenTransfer* transfer, TGe
 static TGenEvent _tgentransfer_runTransferEventLoop(TGenTransfer* transfer, TGenEvent events) {
     gsize readBytesBefore = transfer->bytes.payloadRead;
     gsize writeBytesBefore = transfer->bytes.payloadWrite;
-
-    tgen_info("transfer events %d", events);
 
     /* process the events */
     if(events & TGEN_EVENT_READ) {
