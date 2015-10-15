@@ -20,8 +20,10 @@ typedef enum XTCPLogLevel {
     XTCP_LOG_MESSAGE,
     XTCP_LOG_WARNING,
     XTCP_LOG_ERROR,
+    XTCP_LOG_UNKNOWN,
 } XTCPLogLevel;
 
+XTCPLogLevel xtcp_log_level();
 void xtcp_log(XTCPLogLevel log_level, const char *filename, const char *function_name, int lineno, const char *format, ...);
 
 void queue_push(queue_t **head, void *data);

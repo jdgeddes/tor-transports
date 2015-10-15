@@ -12,14 +12,15 @@ typedef struct libc_func_s {
     BindFunc bind;
     ListenFunc listen;
     AcceptFunc accept;
-    EpollWaitFunc epoll_wait;
     WriteFunc write;
     ReadFunc read;
     ConnectFunc connect;
     SendFunc send;
     RecvFunc recv;
-    SelectFunc select;
     CloseFunc close;
+    EpollCtlFunc epoll_ctl;
+    EpollWaitFunc epoll_wait;
+    SelectFunc select;
 } libc_func_t;
 
 
@@ -49,14 +50,15 @@ void init_lib() {
     SETSYM_OR_FAIL(bind);
     SETSYM_OR_FAIL(listen);
     SETSYM_OR_FAIL(accept);
-    SETSYM_OR_FAIL(epoll_wait);
     SETSYM_OR_FAIL(write);
     SETSYM_OR_FAIL(read);
     SETSYM_OR_FAIL(connect);
     SETSYM_OR_FAIL(send);
     SETSYM_OR_FAIL(recv);
-    SETSYM_OR_FAIL(select);
     SETSYM_OR_FAIL(close);
+    SETSYM_OR_FAIL(epoll_ctl);
+    SETSYM_OR_FAIL(epoll_wait);
+    SETSYM_OR_FAIL(select);
 
     xtcp_debug("initialized all interposed functions");
 }
@@ -119,6 +121,11 @@ ssize_t read(int fd, void *buf, size_t count) {
 int close(int fd) {
     xtcp_debug("close fd %d", fd);
     return global_data.libc.close(fd);
+}
+
+int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
+    xtcp_debug("epoll_ctl epfd %d op %d fd %d", epfd, op, fd);
+    return global_data.libc.epoll_ctl(epfd, op, fd, event);
 }
 
 int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) {

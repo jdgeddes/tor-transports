@@ -40,7 +40,13 @@ struct hashtable_s {
     int size;
 };
 
+// TODO no global variables!!!
 FILE *logfp = NULL;
+XTCPLogLevel min_log_level = XTCP_LOG_UNKNOWN;
+
+XTCPLogLevel xtcp_log_level() {
+    return min_log_level;
+}
 
 void xtcp_log(XTCPLogLevel log_level, const char *filename, const char *function_name, int lineno, const char *format, ...) {
     time_t now;
@@ -55,6 +61,29 @@ void xtcp_log(XTCPLogLevel log_level, const char *filename, const char *function
             logfp = fopen(logfilename, "w");
         }
     }
+
+    if(min_log_level == XTCP_LOG_UNKNOWN) {
+        XTCPLogLevel min_log_level = XTCP_LOG_MESSAGE;
+        char *loglevel = getenv("XTCP_LOG_LEVEL");
+        if(loglevel) {
+            if(!strcasecmp(loglevel, "debug")) {
+                min_log_level = XTCP_LOG_DEBUG;
+            } else if(!strcasecmp(loglevel, "info")) {
+                min_log_level = XTCP_LOG_INFO;
+            } else if(!strcasecmp(loglevel, "message")) {
+                min_log_level = XTCP_LOG_MESSAGE;
+            } else if(!strcasecmp(loglevel, "warning")) {
+                min_log_level = XTCP_LOG_WARNING;
+            } else if(!strcasecmp(loglevel, "error")) {
+                min_log_level = XTCP_LOG_ERROR;
+            }
+        }
+    }
+
+    if(log_level <= min_log_level) {
+        return;
+    }
+
 
     char hostname[128];
     gethostname(hostname, 128);

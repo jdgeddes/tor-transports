@@ -7,8 +7,6 @@
 
 #include "libs/libutp/utp.h"
 
-#define DEBUG_LEVEL XTCP_LOG_INFO
-
 static void init() __attribute__((constructor));
 
 uint64 utp_log_cb(utp_callback_arguments *a);
@@ -229,7 +227,7 @@ utp_context *utp_create_context(int sockfd, int nonblock) {
     utp_set_callback(ctx, UTP_ON_ACCEPT, &utp_on_accept_cb);
 
     utp_context_set_option(ctx, UTP_LOG_NORMAL, 1);
-    if(DEBUG_LEVEL >= XTCP_LOG_DEBUG) {
+    if(xtcp_log_level() == XTCP_LOG_DEBUG) {
         utp_context_set_option(ctx, UTP_LOG_MTU, 1);
         utp_context_set_option(ctx, UTP_LOG_DEBUG, 1);
     }
