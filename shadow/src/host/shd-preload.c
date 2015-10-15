@@ -113,8 +113,7 @@ Preload* preload_new(const gchar* name, const gchar* path) {
      * @note this will call g_module_check_init() in the preload library if it contains
      * that function.
      */
-    /*lib->handle = g_module_open(lib->path->str, G_MODULE_BIND_LAZY|G_MODULE_BIND_LOCAL);*/
-    lib->handle = g_module_open(lib->path->str, G_MODULE_BIND_LAZY);
+    lib->handle = g_module_open(lib->path->str, G_MODULE_BIND_LAZY|G_MODULE_BIND_LOCAL);
     if(lib->handle) {
         message("successfully loaded private preload library '%s' at %p", lib->path->str, lib);
     } else {
