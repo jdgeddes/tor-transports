@@ -227,10 +227,10 @@ utp_context *utp_create_context(int sockfd, int nonblock) {
     utp_set_callback(ctx, UTP_ON_ACCEPT, &utp_on_accept_cb);
 
     utp_context_set_option(ctx, UTP_LOG_NORMAL, 1);
-    if(xtcp_log_level() == XTCP_LOG_DEBUG) {
+    /*if(xtcp_log_level() <= XTCP_LOG_DEBUG) {*/
         utp_context_set_option(ctx, UTP_LOG_MTU, 1);
         utp_context_set_option(ctx, UTP_LOG_DEBUG, 1);
-    }
+    /*}*/
 
     utp_context_data_t *ctxdata = (utp_context_data_t *)malloc(sizeof(*ctxdata));
     memset(ctxdata, 0, sizeof(*ctxdata));

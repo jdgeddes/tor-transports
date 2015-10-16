@@ -8,6 +8,7 @@ import time
 
 libs = ['template', 'utp']
 tests = ['filexfer', 'openssl', 'tgen']
+tests = ['tgen']
 
 def main():
     if len(sys.argv) == 1 or sys.argv[1].lower() not in libs:

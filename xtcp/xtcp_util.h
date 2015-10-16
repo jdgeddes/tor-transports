@@ -15,12 +15,12 @@ typedef struct buffer_s buffer_t;
 typedef struct hashtable_s hashtable_t;
 
 typedef enum XTCPLogLevel {
-    XTCP_LOG_DEBUG,
-    XTCP_LOG_INFO,
-    XTCP_LOG_MESSAGE,
-    XTCP_LOG_WARNING,
-    XTCP_LOG_ERROR,
-    XTCP_LOG_UNKNOWN,
+    XTCP_LOG_UNKNOWN = 0,
+    XTCP_LOG_DEBUG = 1,
+    XTCP_LOG_INFO = 2,
+    XTCP_LOG_MESSAGE = 3,
+    XTCP_LOG_WARNING = 4,
+    XTCP_LOG_ERROR = 5,
 } XTCPLogLevel;
 
 XTCPLogLevel xtcp_log_level();

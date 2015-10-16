@@ -63,7 +63,7 @@ void xtcp_log(XTCPLogLevel log_level, const char *filename, const char *function
     }
 
     if(min_log_level == XTCP_LOG_UNKNOWN) {
-        XTCPLogLevel min_log_level = XTCP_LOG_MESSAGE;
+        XTCPLogLevel min_log_level = XTCP_LOG_DEBUG;
         char *loglevel = getenv("XTCP_LOG_LEVEL");
         if(loglevel) {
             if(!strcasecmp(loglevel, "debug")) {
