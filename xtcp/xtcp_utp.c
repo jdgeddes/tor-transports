@@ -546,6 +546,22 @@ int close(int fd) {
         hashtable_remove(global_data.sockfd_to_context, fd);
     }
     hashtable_remove(global_data.sockfd_to_socket, fd);
+
+    utp_socket_stats *stats = utp_get_stats(s);
+    if (stats) {
+        xtcp_info("Socket Statistics:");
+        xtcp_info("    Bytes sent:          %lu", stats->nbytes_xmit);
+        xtcp_info("    Bytes received:      %lu", stats->nbytes_recv);
+        xtcp_info("    Packets received:    %lu", stats->nrecv);
+        xtcp_info("    Packets sent:        %lu", stats->nxmit);
+        xtcp_info("    Duplicate receives:  %lu", stats->nduprecv);
+        xtcp_info("    Retransmits:         %lu", stats->rexmit);
+        xtcp_info("    Fast Retransmits:    %lu", stats->fastrexmit);
+        xtcp_info("    Best guess at MTU:   %lu", stats->mtu_guess);
+    } else {
+        xtcp_info("No socket statistics available");
+    }
+
     utp_close(s);
 
     return 0;
