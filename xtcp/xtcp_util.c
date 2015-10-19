@@ -56,7 +56,7 @@ void xtcp_log(XTCPLogLevel log_level, const char *filename, const char *function
     if(!logfp) {
         char *logfilename = getenv("XTCP_LOG");
         if(!logfilename) {
-            logfp = stderr;
+            logfp = stdout;
         } else {
             logfp = fopen(logfilename, "w");
         }
@@ -361,7 +361,7 @@ int *hashtable_getkeys(hashtable_t *table) {
     while(iter) {
         keys[idx] = iter->key;
         idx++;
-        iter = iter->next;
+        iter = iter->global_next;
     }
     
     return keys;
@@ -378,8 +378,10 @@ void **hashtable_getvalues(hashtable_t *table) {
     while(iter) {
         values[idx] = iter->value;
         idx++;
-        iter = iter->next;
+        iter = iter->global_next;
     }
+
+    assert(idx == table->size);
     
     return values;
 }
