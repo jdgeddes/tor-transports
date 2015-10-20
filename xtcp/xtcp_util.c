@@ -200,7 +200,11 @@ buffer_t *buffer_new() {
 void buffer_append(buffer_t *buffer, unsigned char *data, size_t datalen) {
     size_t newsize = buffer->size;
     while(buffer->len + datalen > newsize) {
-        newsize = MAX(newsize, 1) * 2;
+        if(newsize < 1) {
+            newsize = 2;
+        } else {
+            newsize = newsize * 2;
+        }
     }
 
     if(buffer->size < newsize) {

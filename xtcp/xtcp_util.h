@@ -1,9 +1,6 @@
 #ifndef XTCP_UTIL_H
 #define XTCP_UTIL_H
 
-#define MIN(a,b) (a < b ? a : b)
-#define MAX(a,b) (a > b ? a : b)
-
 #define xtcp_debug(...) xtcp_log(XTCP_LOG_DEBUG, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
 #define xtcp_info(...) xtcp_log(XTCP_LOG_INFO, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
 #define xtcp_message(...) xtcp_log(XTCP_LOG_MESSAGE, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
