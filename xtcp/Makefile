@@ -1,6 +1,6 @@
 CC = gcc 
-CFLAGS = -fPIC -Wall -Wextra -O2 -g 
-LDFLAGS = -shared -ldl -lrt -lm
+CFLAGS = -fPIC -Wall -Wextra -O2 -g `pkg-config --cflags glib-2.0`
+LDFLAGS = -shared -ldl -lrt -lm `pkg-config --libs glib-2.0`
 RM = rm -f  
 LIBS = libxtcp_template.so libxtcp_utp.so
 
@@ -14,7 +14,7 @@ libxtcp_template.so: xtcp_template.o xtcp_util.o
 	$(CC) ${LDFLAGS} -o $@ $^ ${LDFLAGS}
 
 libxtcp_utp.so: xtcp_utp.o xtcp_util.o
-	cd ./libs/libutp/ && make
+	cd ./libs/libutp/ && make && cp libutp.* ${HOME}/.local/lib/
 	$(CC) ${LDFLAGS} -o $@ $^ -L${HOME}/.local/lib/ -lutp ${LDFLAGS}
 
 $(SRCS:.c=.d):%.d:%.c
