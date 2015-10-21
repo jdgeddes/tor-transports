@@ -45,7 +45,7 @@ typedef struct utp_socket_data_s {
     int writeable;
     int closed;
     int eof;
-    buffer_t *readbuf;
+    GByteArray *readbuf;
 } utp_socket_data_t;
 
 typedef struct libc_func_s {
@@ -313,7 +313,7 @@ uint64 utp_on_accept_cb(utp_callback_arguments *a) {
 
     utp_socket_data_t *sdata = (utp_socket_data_t *)malloc(sizeof(*sdata));
     memset(sdata, 0, sizeof(*sdata));
-    sdata->readbuf = buffer_new();
+    sdata->readbuf = g_byte_array_new();
     sdata->connected = 0;
     sdata->writeable = 1;
     utp_set_userdata(s, sdata);
@@ -337,7 +337,7 @@ uint64 utp_on_accept_cb(utp_callback_arguments *a) {
 uint64 utp_on_read_cb(utp_callback_arguments *a) {
     utp_socket *s = a->socket;
     utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
-    buffer_append(sdata->readbuf, (unsigned char *)a->buf, a->len);
+    sdata->readbuf = g_byte_array_append(sdata->readbuf, (unsigned char *)a->buf, a->len);
     utp_read_drained(s);
 
     xtcp_info("[%p] read in %lu bytes on %d", s, a->len, sdata->sockfd);
@@ -648,7 +648,7 @@ int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
     utp_socket *s = utp_create_socket(ctx);
     utp_socket_data_t *sdata = (utp_socket_data_t *)malloc(sizeof(*sdata));
     memset(sdata, 0, sizeof(*sdata));
-    sdata->readbuf = buffer_new();
+    sdata->readbuf = g_byte_array_new();
     sdata->sockfd = sockfd;
     utp_set_userdata(s, sdata);
 
@@ -730,19 +730,20 @@ ssize_t xtcp_recv(int sockfd, void *buf, size_t len, int flags) {
     }
 
     /* if the socket is blocking, wait until we have enough bytes to fill the buffer */
-    while(!ctxdata->nonblock && (size_t)buffer_length(sdata->readbuf) < len) {
+    while(!ctxdata->nonblock && sdata->readbuf->len < len) {
         if(utp_read_context(ctx, ctxdata) < 0) {
             return -1;
         }
     }
 
-    len = MIN(len, buffer_length(sdata->readbuf));
+    len = MIN(len, sdata->readbuf->len);
     if(len == 0) {
         errno = EWOULDBLOCK;
         return -1;
     }
 
-    buffer_pop_bytes(sdata->readbuf, (unsigned char *)buf, len);
+    memcpy(buf, sdata->readbuf->data, len);
+    sdata->readbuf = g_byte_array_remove_range(sdata->readbuf, 0, len);
 
     return len;
 }
@@ -899,7 +900,7 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
         if(sdata->eof) {
             ev |= EPOLLIN;
         } else if(sdata->connected) {
-            if(buffer_length(sdata->readbuf) > 0) {
+            if(sdata->readbuf->len > 0) {
                 ev |= EPOLLIN;
             }
             if(sdata->writeable) {
@@ -978,7 +979,7 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *expectfds, struc
             if(readfds && FD_ISSET(fd, readfds)) {
                 FD_CLR(fd, readfds);
                 ret--;
-                if(buffer_length(sdata->readbuf) > 0) {
+                if(sdata->readbuf->len > 0) {
                     xtcp_debug("marking fd %d as readable", fd);
                     FD_SET(fd, readfds);
                     ret++;
