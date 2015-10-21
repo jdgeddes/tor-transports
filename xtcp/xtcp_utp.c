@@ -36,7 +36,7 @@ typedef struct utp_context_data_s {
     int closed;
     int epollfd;
     struct epoll_event epollev;
-    queue_t *socketq;
+    GQueue *socketq;
 } utp_context_data_t;
 
 typedef struct utp_socket_data_s {
@@ -137,6 +137,8 @@ utp_context *utp_create_context(int sockfd, int nonblock) {
     memset(ctxdata, 0, sizeof(*ctxdata));
     ctxdata->sockfd = sockfd;
     ctxdata->nonblock = nonblock;
+    ctxdata->socketq = g_queue_new();
+    g_queue_init(ctxdata->socketq);
 
     utp_context_set_userdata(ctx, ctxdata);
 
@@ -317,7 +319,7 @@ uint64 utp_on_accept_cb(utp_callback_arguments *a) {
     utp_set_userdata(s, sdata);
 
     /* push socket into incoming queue */
-    queue_push(&ctxdata->socketq, s);
+    g_queue_push_tail(ctxdata->socketq, s);
 
     struct sockaddr_in *addr = (struct sockaddr_in*)a->address;
     xtcp_info("[%p] added utp socket for fd %d for incoming connection %s:%d", s,
@@ -577,14 +579,14 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 
     /* if the UTP context is nonblock and no incoming sockets are in
      * the queue, block and keep reading until we have one */
-    while(!ctxdata->nonblock && queue_length(ctxdata->socketq) == 0) {
+    while(!ctxdata->nonblock && g_queue_get_length(ctxdata->socketq) == 0) {
         if(utp_read_context(ctx, ctxdata) < 0) {
             return -1;
         }
     }
 
     /* get a socket from the queue, if we don't have one return block */
-    utp_socket *s = (utp_socket *)queue_pop(&ctxdata->socketq);
+    utp_socket *s = (utp_socket *)g_queue_pop_head(ctxdata->socketq);
     if(!s) {
         errno = EWOULDBLOCK;
         return -1;
@@ -862,7 +864,7 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
                     xtcp_warning("problems reading from context %p on %d", ctx, fd);
                 }
 
-                if(!ctxdata->closed && queue_length(ctxdata->socketq) > 0) {
+                if(!ctxdata->closed && g_queue_get_length(ctxdata->socketq) > 0) {
                     events[nfds].data.fd = fd;
                     events[nfds].events = EPOLLIN;
                     nfds++;
@@ -956,7 +958,7 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *expectfds, struc
 
             utp_read_context(ctx, ctxdata);
 
-            if(queue_length(ctxdata->socketq) > 0 && readfds && !FD_ISSET(fd, readfds)) {
+            if(g_queue_get_length(ctxdata->socketq) > 0 && readfds && !FD_ISSET(fd, readfds)) {
                 xtcp_debug("socket to accept, marking %d as readable", fd);
                 FD_SET(fd, readfds);
                 ret++;
