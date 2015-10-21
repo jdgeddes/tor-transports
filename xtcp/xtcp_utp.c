@@ -20,6 +20,22 @@
 #define ONE_MILLISECOND 1000000
 #define ONE_SECOND 1000000000
 
+typedef enum UTPLogLevel {
+    UTP_ERROR = 1 << 2,
+    UTP_CRITICAL = 1 << 3,
+    UTP_WARNING = 1 << 4,
+    UTP_MESSAGE = 1 << 5,
+    UTP_INFO = 1 << 6,
+    UTP_DEBUG = 1 << 7,
+} UTPLogLevel;
+
+#define utp_debug(...) utp_log(UTP_DEBUG, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define utp_info(...) utp_log(UTP_INFO, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define utp_message(...) utp_log(UTP_MESSAGE, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define utp_warning(...) utp_log(UTP_WARNING, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define utp_critical(...) utp_log(UTP_CRITICAL, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define utp_error(...) utp_log(UTP_ERROR, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+
 static void init() __attribute__((constructor));
 
 uint64 utp_log_cb(utp_callback_arguments *a);
@@ -88,6 +104,41 @@ int global_data_size = sizeof(global_data);
 	} \
 }
 
+void utp_log(UTPLogLevel log_level, const char *filename, const char *function_name, int lineno, const char *format, ...) {
+    va_list vargs;
+    va_start(vargs, format);
+
+    GString *buffer = g_string_new("");
+
+    switch(log_level) {
+        case UTP_DEBUG:
+            g_string_append_printf(buffer, "[DEBUG] ");
+            break;
+        case UTP_INFO:
+            g_string_append_printf(buffer, "[INFO] ");
+            break;
+        case UTP_MESSAGE:
+            g_string_append_printf(buffer, "[MESSAGE] ");
+            break;
+        case UTP_WARNING:
+            g_string_append_printf(buffer, "[WARNING] ");
+            break;
+        case UTP_ERROR:
+            g_string_append_printf(buffer, "[ERROR] ");
+            break;
+        default:
+            g_string_append_printf(buffer, "[?????] ");
+            break;
+    }
+
+
+    g_string_append_printf(buffer, "[%s@%s:%d] %s", function_name, filename, lineno, format);
+    g_logv(G_LOG_DOMAIN, (GLogLevelFlags)log_level, buffer->str, vargs);
+
+    va_end(vargs);
+
+}
+
 void init_lib() {
     SETSYM_OR_FAIL(socket);
     SETSYM_OR_FAIL(bind);
@@ -107,7 +158,7 @@ void init_lib() {
     global_data.sockfd_to_context = g_hash_table_new(g_direct_hash, g_direct_equal);
     global_data.sockfd_to_socket = g_hash_table_new(g_direct_hash, g_direct_equal);
 
-    xtcp_debug("initialized all interposed functions");
+    utp_info("initialized all interposed functions");
 }
 
 void init() {
@@ -128,10 +179,8 @@ utp_context *utp_create_context(int sockfd, int nonblock) {
     utp_set_callback(ctx, UTP_ON_ACCEPT, &utp_on_accept_cb);
 
     utp_context_set_option(ctx, UTP_LOG_NORMAL, 1);
-    /*if(xtcp_log_level() <= XTCP_LOG_DEBUG) {*/
-        utp_context_set_option(ctx, UTP_LOG_MTU, 1);
-        utp_context_set_option(ctx, UTP_LOG_DEBUG, 1);
-    /*}*/
+    utp_context_set_option(ctx, UTP_LOG_MTU, 1);
+    utp_context_set_option(ctx, UTP_LOG_DEBUG, 1);
 
     utp_context_data_t *ctxdata = (utp_context_data_t *)malloc(sizeof(*ctxdata));
     memset(ctxdata, 0, sizeof(*ctxdata));
@@ -162,12 +211,12 @@ utp_context *utp_create_context(int sockfd, int nonblock) {
 
     ctxdata->timerfd = timerfd_create(CLOCK_REALTIME, 0);
     if(ctxdata->timerfd == -1) {
-        xtcp_error("error calling timerfd_create");
+        utp_warning("error calling timerfd_create");
         return NULL;
     }
 
     if(timerfd_settime(ctxdata->timerfd, TFD_TIMER_ABSTIME, &its, NULL) == -1) {
-        xtcp_error("error setting time for timerfd %d", ctxdata->timerfd);
+        utp_warning("error setting time for timerfd %d", ctxdata->timerfd);
     }
 
     return ctx;
@@ -179,7 +228,7 @@ void utp_destroy_socket(int sockfd) {
     utp_socket *s = (utp_socket *)g_hash_table_lookup(global_data.sockfd_to_socket,
             GINT_TO_POINTER(sockfd));
 
-    xtcp_debug("destroying socket %d (%p %p)", sockfd, ctx, s);
+    utp_info("destroying socket %d", sockfd);
 
     if(ctx) {
         utp_context_data_t *ctxdata = (utp_context_data_t *)utp_context_get_userdata(ctx);
@@ -214,7 +263,7 @@ void utp_destroy_socket(int sockfd) {
  * Callback Functions
  **/
 uint64 utp_log_cb(utp_callback_arguments *a) {
-    xtcp_info("[utp-log] %s", a->buf);
+    utp_info("[utp-log] %s", a->buf);
 	return 0;
 }
 
@@ -222,17 +271,17 @@ uint64 utp_sendto_cb(utp_callback_arguments *a) {
     utp_context *ctx = a->context;
     utp_context_data_t *ctxdata = (utp_context_data_t *)utp_context_get_userdata(ctx);
     if(!ctxdata) {
-        xtcp_error("could not find context data");
+        utp_warning("could not find context data");
         return -1;
     }
 
     if(sendto(ctxdata->sockfd, a->buf, a->len, 0, a->address, a->address_len) < 0) {
-        xtcp_error("error sending %d bytes on socket %d: %s", a->len, ctxdata->sockfd, strerror(errno));
+        utp_warning("error sending %d bytes on socket %d: %s", a->len, ctxdata->sockfd, strerror(errno));
         return -1;
     }
 
     struct sockaddr_in *sin = (struct sockaddr_in *) a->address;
-    xtcp_info("sendto %d: %zd byte packet to %s:%d%s", ctxdata->sockfd, a->len,
+    utp_info("sendto %d: %zd byte packet to %s:%d%s", ctxdata->sockfd, a->len,
             inet_ntoa(sin->sin_addr), ntohs(sin->sin_port),
             (a->flags & UTP_UDP_DONTFRAG) ? " (DF bit request but not yet implemented)" :"");
 
@@ -242,7 +291,7 @@ uint64 utp_sendto_cb(utp_callback_arguments *a) {
 
 uint64 utp_on_state_change_cb(utp_callback_arguments *a) {
     utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(a->socket);
-	xtcp_debug("[utp] state %d: %s, sockfd %d", a->state, utp_state_names[a->state], sdata->sockfd);
+	utp_info("[utp] state %d: %s, sockfd %d", a->state, utp_state_names[a->state], sdata->sockfd);
 
 	switch (a->state) {
 		case UTP_STATE_CONNECT:
@@ -262,26 +311,26 @@ uint64 utp_on_state_change_cb(utp_callback_arguments *a) {
 			break;
 
 		case UTP_STATE_EOF:
-			xtcp_info("[utp] received EOF from socket");
+			utp_info("[utp] received EOF from socket");
             sdata->eof = 1;
 			break;
 
 		case UTP_STATE_DESTROYING:
-			xtcp_info("[utp] UTP socket is being destroyed; exiting");
+			utp_info("[utp] UTP socket is being destroyed; exiting");
 
             utp_socket_stats *stats = utp_get_stats(a->socket);
             if (stats) {
-                xtcp_info("Socket Statistics:");
-                xtcp_info("    Bytes sent:          %lu", stats->nbytes_xmit);
-                xtcp_info("    Bytes received:      %lu", stats->nbytes_recv);
-                xtcp_info("    Packets received:    %lu", stats->nrecv);
-                xtcp_info("    Packets sent:        %lu", stats->nxmit);
-                xtcp_info("    Duplicate receives:  %lu", stats->nduprecv);
-                xtcp_info("    Retransmits:         %lu", stats->rexmit);
-                xtcp_info("    Fast Retransmits:    %lu", stats->fastrexmit);
-                xtcp_info("    Best guess at MTU:   %lu", stats->mtu_guess);
+                utp_info("Socket Statistics:");
+                utp_info("    Bytes sent:          %lu", stats->nbytes_xmit);
+                utp_info("    Bytes received:      %lu", stats->nbytes_recv);
+                utp_info("    Packets received:    %lu", stats->nrecv);
+                utp_info("    Packets sent:        %lu", stats->nxmit);
+                utp_info("    Duplicate receives:  %lu", stats->nduprecv);
+                utp_info("    Retransmits:         %lu", stats->rexmit);
+                utp_info("    Fast Retransmits:    %lu", stats->fastrexmit);
+                utp_info("    Best guess at MTU:   %lu", stats->mtu_guess);
             } else {
-                xtcp_info("No socket statistics available");
+                utp_info("No socket statistics available");
             }
 
             utp_destroy_socket(sdata->sockfd);
@@ -293,7 +342,7 @@ uint64 utp_on_state_change_cb(utp_callback_arguments *a) {
 }
 
 uint64 utp_on_error_cb(utp_callback_arguments *a) {
-	xtcp_error("[utp] %s", utp_error_code_names[a->error_code]);
+	utp_warning("[utp] %s", utp_error_code_names[a->error_code]);
 
     utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(a->socket);
     sdata->closed = 1;
@@ -307,7 +356,7 @@ uint64 utp_on_accept_cb(utp_callback_arguments *a) {
 
     utp_context_data_t *ctxdata = (utp_context_data_t *)utp_context_get_userdata(ctx);
     if(!ctxdata) {
-        xtcp_error("could not find context data");
+        utp_warning("could not find context data");
         return -1;
     }
 
@@ -322,7 +371,7 @@ uint64 utp_on_accept_cb(utp_callback_arguments *a) {
     g_queue_push_tail(ctxdata->socketq, s);
 
     struct sockaddr_in *addr = (struct sockaddr_in*)a->address;
-    xtcp_info("[%p] added utp socket for fd %d for incoming connection %s:%d", s,
+    utp_info("[%p] added utp socket for fd %d for incoming connection %s:%d", s,
             ctxdata->sockfd, inet_ntoa(addr->sin_addr), addr->sin_port);
 
 
@@ -340,13 +389,13 @@ uint64 utp_on_read_cb(utp_callback_arguments *a) {
     sdata->readbuf = g_byte_array_append(sdata->readbuf, (unsigned char *)a->buf, a->len);
     utp_read_drained(s);
 
-    xtcp_info("[%p] read in %lu bytes on %d", s, a->len, sdata->sockfd);
+    utp_info("[%p] read in %lu bytes on %d", s, a->len, sdata->sockfd);
 
 	return 0;
 }
 
 void utp_handle_icmp(utp_context *ctx, int sockfd) {
-    xtcp_debug("received ICMP on socket %d", sockfd);
+    utp_debug("received ICMP on socket %d", sockfd);
 	while (1) {
 		unsigned char vec_buf[4096], ancillary_buf[4096];
 		struct iovec iov = { vec_buf, sizeof(vec_buf) };
@@ -374,48 +423,48 @@ void utp_handle_icmp(utp_context *ctx, int sockfd) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
 				break;
             } else {
-				xtcp_error("recvmsg returned %d", len);
+				utp_warning("recvmsg returned %d", len);
             }
 		}
 
 		for (cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
 			if (cmsg->cmsg_type != IP_RECVERR) {
-				xtcp_debug("Unhandled errqueue type: %d", cmsg->cmsg_type);
+				utp_debug("Unhandled errqueue type: %d", cmsg->cmsg_type);
 				continue;
 			}
 
 			if (cmsg->cmsg_level != SOL_IP) {
-				xtcp_debug("Unhandled errqueue level: %d", cmsg->cmsg_level);
+				utp_debug("Unhandled errqueue level: %d", cmsg->cmsg_level);
 				continue;
 			}
 
-			xtcp_debug("errqueue: IP_RECVERR, SOL_IP, len %zd", cmsg->cmsg_len);
+			utp_debug("errqueue: IP_RECVERR, SOL_IP, len %zd", cmsg->cmsg_len);
 
 			if (remote.sin_family != AF_INET) {
-				xtcp_debug("Address family is %d, not AF_INET?  Ignoring", remote.sin_family);
+				utp_debug("Address family is %d, not AF_INET?  Ignoring", remote.sin_family);
 				continue;
 			}
 
-			xtcp_debug("Remote host: %s:%d", inet_ntoa(remote.sin_addr), ntohs(remote.sin_port));
+			utp_debug("Remote host: %s:%d", inet_ntoa(remote.sin_addr), ntohs(remote.sin_port));
 
 			e = (struct sock_extended_err *) CMSG_DATA(cmsg);
 
 			if (!e) {
-				xtcp_debug("errqueue: sock_extended_err is NULL?");
+				utp_debug("errqueue: sock_extended_err is NULL?");
 				continue;
 			}
 
 			if (e->ee_origin != SO_EE_ORIGIN_ICMP) {
-				xtcp_debug("errqueue: Unexpected origin: %d", e->ee_origin);
+				utp_debug("errqueue: Unexpected origin: %d", e->ee_origin);
 				continue;
 			}
 
-			xtcp_debug("    ee_errno:  %d", e->ee_errno);
-			xtcp_debug("    ee_origin: %d", e->ee_origin);
-			xtcp_debug("    ee_type:   %d", e->ee_type);
-			xtcp_debug("    ee_code:   %d", e->ee_code);
-			xtcp_debug("    ee_info:   %d", e->ee_info);	// discovered MTU for EMSGSIZE errors
-			xtcp_debug("    ee_data:   %d", e->ee_data);
+			utp_debug("    ee_errno:  %d", e->ee_errno);
+			utp_debug("    ee_origin: %d", e->ee_origin);
+			utp_debug("    ee_type:   %d", e->ee_type);
+			utp_debug("    ee_code:   %d", e->ee_code);
+			utp_debug("    ee_info:   %d", e->ee_info);	// discovered MTU for EMSGSIZE errors
+			utp_debug("    ee_data:   %d", e->ee_data);
 
 			// "Node that caused the error"
 			// "Node that generated the error"
@@ -423,17 +472,17 @@ void utp_handle_icmp(utp_context *ctx, int sockfd) {
 			icmp_sin = (struct sockaddr_in *) icmp_addr;
 
 			if (icmp_addr->sa_family != AF_INET) {
-				xtcp_debug("ICMP's address family is %d, not AF_INET?", icmp_addr->sa_family);
+				utp_debug("ICMP's address family is %d, not AF_INET?", icmp_addr->sa_family);
 				continue;
 			}
 
 			if (icmp_sin->sin_port != 0) {
-				xtcp_debug("ICMP's 'port' is not 0?");
+				utp_debug("ICMP's 'port' is not 0?");
 				continue;
 			}
 
-			/*xtcp_debug("msg_flags: %d", msg.msg_flags);*/
-			/*if (o_xtcp_debug) {*/
+			/*utp_debug("msg_flags: %d", msg.msg_flags);*/
+			/*if (o_utp_debug) {*/
 				/*if (msg.msg_flags & MSG_TRUNC)		fprintf(stderr, " MSG_TRUNC");*/
 				/*if (msg.msg_flags & MSG_CTRUNC)		fprintf(stderr, " MSG_CTRUNC");*/
 				/*if (msg.msg_flags & MSG_EOR)		fprintf(stderr, " MSG_EOR");*/
@@ -442,15 +491,15 @@ void utp_handle_icmp(utp_context *ctx, int sockfd) {
 				/*fprintf(stderr, "");*/
 			/*}*/
 
-			/*if (o_xtcp_debug >= 3)*/
+			/*if (o_utp_debug >= 3)*/
 				/*hexdump(vec_buf, len);*/
 
 			if (e->ee_type == 3 && e->ee_code == 4) {
-				xtcp_debug("ICMP type 3, code 4: Fragmentation error, discovered MTU %d", e->ee_info);
+				utp_debug("ICMP type 3, code 4: Fragmentation error, discovered MTU %d", e->ee_info);
 				utp_process_icmp_fragmentation(ctx, vec_buf, len, (struct sockaddr *)&remote, sizeof(remote), e->ee_info);
 			}
 			else {
-				xtcp_debug("ICMP type %d, code %d", e->ee_type, e->ee_code);
+				utp_debug("ICMP type %d, code %d", e->ee_type, e->ee_code);
 				utp_process_icmp_error(ctx, vec_buf, len, (struct sockaddr *)&remote, sizeof(remote));
 			}
 		}
@@ -470,21 +519,21 @@ int utp_read_context(utp_context *ctx, utp_context_data_t *ctxdata) {
         int len = recvfrom(ctxdata->sockfd, buf, sizeof(buf),
                 MSG_DONTWAIT, (struct sockaddr *)&addr, &addrlen);
 
-        xtcp_debug("read in %d bytes on socket %d", len, ctxdata->sockfd);
+        utp_debug("read in %d bytes on socket %d", len, ctxdata->sockfd);
 
         if(len < 0) {
             if(errno == EAGAIN || errno == EWOULDBLOCK) {
                 utp_issue_deferred_acks(ctx);
                 break;
             } else {
-                xtcp_debug("recv on %d: %s", ctxdata->sockfd, strerror(errno));
+                utp_debug("recv on %d: %s", ctxdata->sockfd, strerror(errno));
                 return -1;
             }
         }
 
         /* have UTP process the data we just read */
         if(!utp_process_udp(ctx, (const byte *)buf, len, (struct sockaddr *)&addr, addrlen)) {
-            xtcp_debug("packet not handled by UTP, ignoring");
+            utp_debug("packet not handled by UTP, ignoring");
         }
     }
 
@@ -505,19 +554,19 @@ int socket(int domain, int type, int protocol) {
     type = (type & ~SOCK_STREAM) | SOCK_DGRAM;
     int sockfd = global_data.libc.socket(AF_INET, type, IPPROTO_UDP);
     if(sockfd < 0) {
-        xtcp_error("error creating sockfd");
+        utp_warning("error creating sockfd");
         return sockfd;
     }
 
     utp_context *ctx = utp_create_context(sockfd, (type & SOCK_NONBLOCK));
     if(!ctx) {
-        xtcp_error("could not create context");
+        utp_warning("could not create context");
         return -1;
     }
 
     utp_context_data_t *ctxdata = (utp_context_data_t *)utp_context_get_userdata(ctx);
     if(!ctxdata) {
-        xtcp_error("no ctxdata for context %p on sockfd %d", ctx, sockfd);
+        utp_warning("no ctxdata for context %p on sockfd %d", ctx, sockfd);
         return -1;
     }
 
@@ -528,25 +577,25 @@ int socket(int domain, int type, int protocol) {
     g_hash_table_insert(global_data.sockfd_to_context, GINT_TO_POINTER(ctxdata->sockfd), ctx); 
     g_hash_table_insert(global_data.timerfd_to_context, GINT_TO_POINTER(ctxdata->timerfd), ctx); 
 
-    xtcp_info("created socket %d (timer %d) which is %sblocking", 
+    utp_info("created socket %d (timer %d) which is %sblocking", 
             ctxdata->sockfd, ctxdata->timerfd, (type & SOCK_NONBLOCK) ? "non-" : "");
 
     return sockfd;
 }
 
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
-    xtcp_debug("bind on socket %d", sockfd);
+    utp_debug("bind on socket %d", sockfd);
 
     utp_context *ctx = (utp_context *)g_hash_table_lookup(global_data.sockfd_to_context, 
             GINT_TO_POINTER(sockfd));
     if(!ctx) {
-        xtcp_debug("no context for %d, not a TCP socket", sockfd);
+        utp_debug("no context for %d, not a TCP socket", sockfd);
         return global_data.libc.bind(sockfd, addr, addrlen);
     }
 
     utp_context_data_t *ctxdata = (utp_context_data_t *)utp_context_get_userdata(ctx);
     if(!ctxdata) {
-        xtcp_error("no UTP data for socket %d", sockfd);
+        utp_warning("no UTP data for socket %d", sockfd);
         return -1;
     }
 
@@ -554,7 +603,7 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
 }
 
 int listen(int sockfd, int backlog) {
-    xtcp_debug("listen on socket %d", sockfd);
+    utp_debug("listen on socket %d", sockfd);
     if(!g_hash_table_lookup(global_data.sockfd_to_context, GINT_TO_POINTER(sockfd))) {
         return global_data.libc.listen(sockfd, backlog);
     }
@@ -562,18 +611,18 @@ int listen(int sockfd, int backlog) {
 }
 
 int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
-    xtcp_debug("accept on socket %d", sockfd);
+    utp_debug("accept on socket %d", sockfd);
 
     utp_context *ctx = (utp_context *)g_hash_table_lookup(global_data.sockfd_to_context, 
             GINT_TO_POINTER(sockfd));
     if(!ctx) {
-        xtcp_debug("not utp context for socket %d, passing through", sockfd);
+        utp_debug("not utp context for socket %d, passing through", sockfd);
         return global_data.libc.accept(sockfd, addr, addrlen);
     }
 
     utp_context_data_t *ctxdata = (utp_context_data_t *)utp_context_get_userdata(ctx);
     if(!ctxdata) {
-        xtcp_error("not context data for socket %d", sockfd);
+        utp_warning("not context data for socket %d", sockfd);
         return -1;
     }
 
@@ -608,24 +657,24 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 
     g_hash_table_insert(global_data.sockfd_to_socket, GINT_TO_POINTER(newsockfd), s);
 
-    xtcp_info("added socket %d for socket %p", newsockfd, s);
+    utp_info("added socket %d for socket %p", newsockfd, s);
 
     return newsockfd;
 }
 
 int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
-    xtcp_debug("connect on socket %d", sockfd);
+    utp_debug("connect on socket %d", sockfd);
     
     utp_context *ctx = (utp_context *)g_hash_table_lookup(global_data.sockfd_to_context, 
             GINT_TO_POINTER(sockfd));
     if(!ctx) {
-        xtcp_debug("no context for socket %d, skipping");
+        utp_debug("no context for socket %d, skipping");
         return global_data.libc.connect(sockfd, address, address_len);
     }
 
     utp_context_data_t *ctxdata = (utp_context_data_t *)utp_context_get_userdata(ctx);
     if(!ctxdata) {
-        xtcp_error("no context data for socket %d", sockfd);
+        utp_warning("no context data for socket %d", sockfd);
         return -1;
     }
 
@@ -636,12 +685,12 @@ int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
     hints.ai_protocol = IPPROTO_UDP;
 
     if(getaddrinfo("0.0.0.0", NULL, &hints, &res) != 0) {
-        xtcp_error("socket %d: getaddrifo: %s", sockfd, strerror(errno));
+        utp_warning("socket %d: getaddrifo: %s", sockfd, strerror(errno));
         return -1;
     }
 
     if(global_data.libc.bind(ctxdata->sockfd, res->ai_addr, res->ai_addrlen) != 0) {
-        xtcp_error("socket %d: bind: %s", sockfd, strerror(errno));
+        utp_warning("socket %d: bind: %s", sockfd, strerror(errno));
         return -1;
     }
 
@@ -664,8 +713,8 @@ int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
     return 0;
 }
 
-ssize_t xtcp_send(int sockfd, const void *buf, size_t len, int flags) {
-    xtcp_debug("send %d bytes on socket %d", len, sockfd);
+ssize_t utp_send(int sockfd, const void *buf, size_t len, int flags) {
+    utp_debug("send %d bytes on socket %d", len, sockfd);
 
     utp_socket *s = (utp_socket *)g_hash_table_lookup(global_data.sockfd_to_socket, 
             GINT_TO_POINTER(sockfd));
@@ -691,7 +740,7 @@ ssize_t xtcp_send(int sockfd, const void *buf, size_t len, int flags) {
     }
 
     size_t bytes = utp_write(s, (void *)buf, len);
-    xtcp_debug("wrote %d bytes on socket %d", bytes, sockfd);
+    utp_debug("wrote %d bytes on socket %d", bytes, sockfd);
     if(bytes == 0) {
         struct epoll_event ev;
         ev.data.fd = sockfd;
@@ -708,11 +757,11 @@ ssize_t xtcp_send(int sockfd, const void *buf, size_t len, int flags) {
 }
 
 ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
-    return xtcp_send(sockfd, buf, len, flags);
+    return utp_send(sockfd, buf, len, flags);
 }
 
-ssize_t xtcp_recv(int sockfd, void *buf, size_t len, int flags) {
-    xtcp_debug("recv %d bytes on socket %d", len, sockfd);
+ssize_t utp_read(int sockfd, void *buf, size_t len, int flags) {
+    utp_debug("recv %d bytes on socket %d", len, sockfd);
 
     utp_socket *s = (utp_socket *)g_hash_table_lookup(global_data.sockfd_to_socket, 
             GINT_TO_POINTER(sockfd));
@@ -749,11 +798,11 @@ ssize_t xtcp_recv(int sockfd, void *buf, size_t len, int flags) {
 }
 
 ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
-    return xtcp_recv(sockfd, buf, len, flags);
+    return utp_read(sockfd, buf, len, flags);
 }
 
 ssize_t write(int fd, const void *buf, size_t count) {
-    /*xtcp_debug("write %d bytes on fd %d", count, fd);*/
+    /*utp_debug("write %d bytes on fd %d", count, fd);*/
     
     utp_socket *s = (utp_socket *)g_hash_table_lookup(global_data.sockfd_to_socket, 
             GINT_TO_POINTER(fd));
@@ -761,11 +810,11 @@ ssize_t write(int fd, const void *buf, size_t count) {
         return global_data.libc.write(fd, buf, count);
     }
 
-    return xtcp_send(fd, buf, count, 0);
+    return utp_send(fd, buf, count, 0);
 }
 
 ssize_t read(int fd, void *buf, size_t count) {
-    xtcp_debug("read %d bytes on fd %d", count, fd);
+    /*utp_debug("read %d bytes on fd %d", count, fd);*/
 
     utp_socket *s = (utp_socket *)g_hash_table_lookup(global_data.sockfd_to_socket, 
             GINT_TO_POINTER(fd));
@@ -773,7 +822,7 @@ ssize_t read(int fd, void *buf, size_t count) {
         return global_data.libc.read(fd, buf, count);
     }
 
-    return xtcp_recv(fd, buf, count, 0);
+    return utp_read(fd, buf, count, 0);
 }
 
 int close(int fd) {
@@ -782,11 +831,11 @@ int close(int fd) {
     utp_socket *s = (utp_socket *)g_hash_table_lookup(global_data.sockfd_to_socket,
             GINT_TO_POINTER(fd));
     if(!s) {
-        /*xtcp_debug("closing fd %d", fd);*/
+        /*utp_debug("closing fd %d", fd);*/
         return global_data.libc.close(fd);
     }
 
-    xtcp_info("closing socket %d", fd);
+    utp_info("closing socket %d", fd);
 
     utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
     sdata->closed = 1;
@@ -805,7 +854,7 @@ int close(int fd) {
  * Poll/Select functions
  */
 int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
-    xtcp_debug("epoll_ctl epfd %d op %d fd %d events %u", epfd, op, fd,
+    utp_debug("epoll_ctl epfd %d op %d fd %d events %u", epfd, op, fd,
             (event ? event->events : 0));
 
     utp_context *ctx = (utp_context *)g_hash_table_lookup(global_data.sockfd_to_context,
@@ -833,36 +882,36 @@ int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
 }
 
 int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) {
-    xtcp_debug("epoll_wait on ep %d", epfd);
+    utp_debug("epoll_wait on ep %d", epfd);
     
     struct epoll_event *evs = (struct epoll_event *)malloc(maxevents * sizeof(struct epoll_event));
     int nevents = global_data.libc.epoll_wait(epfd, evs, maxevents, timeout);
 
-    xtcp_debug("epoll_wait returned %d fds", nevents);
+    utp_debug("epoll_wait returned %d fds", nevents);
 
     int i, nfds = 0;
     for(i = 0; i < nevents; i++) {
         int fd = evs[i].data.fd;
         int ev = evs[i].events;
 
-        xtcp_debug("fd %d has events %u", fd, ev);
+        utp_debug("fd %d has events %u", fd, ev);
 
         if(g_hash_table_lookup(global_data.sockfd_to_context, GINT_TO_POINTER(fd))) {
             utp_context *ctx = (utp_context *)g_hash_table_lookup(global_data.sockfd_to_context, 
                     GINT_TO_POINTER(fd));
             utp_context_data_t *ctxdata = (utp_context_data_t *)utp_context_get_userdata(ctx);
             if(!ctxdata) {
-                xtcp_error("no context data for socket %d", fd);
+                utp_warning("no context data for socket %d", fd);
                 return -1;
             }
 
-            xtcp_debug("have event %d for context %d", ev, fd);
+            utp_debug("have event %d for context %d", ev, fd);
 
             if(ev & EPOLLERR) {
                 utp_handle_icmp(ctx, ctxdata->sockfd);
             } else if(ev & EPOLLIN) {
                 if(utp_read_context(ctx, ctxdata) < 0) {
-                    xtcp_warning("problems reading from context %p on %d", ctx, fd);
+                    utp_warning("problems reading from context %p on %d", ctx, fd);
                 }
 
                 if(!ctxdata->closed && g_queue_get_length(ctxdata->socketq) > 0) {
@@ -878,7 +927,7 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
             utp_context *ctx = (utp_context *)g_hash_table_lookup(global_data.timerfd_to_context, 
                     GINT_TO_POINTER(fd));
             utp_context_data_t *ctxdata = (utp_context_data_t *)utp_context_get_userdata(ctx);
-            xtcp_info("check timeouts for ctx %p on %d", ctx, ctxdata->sockfd);
+            utp_debug("check timeouts for ctx %p on %d", ctx, ctxdata->sockfd);
             utp_check_timeouts(ctx);
         } else if(!g_hash_table_lookup(global_data.sockfd_to_socket, GINT_TO_POINTER(fd))) {
             memcpy(&events[nfds], &evs[i], sizeof(struct epoll_event));
@@ -892,7 +941,7 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
         utp_socket *s = (utp_socket *)iter->data;
         utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
         if(!sdata) {
-            xtcp_error("no utp socket for socket %p", s);
+            utp_warning("no utp socket for socket %p", s);
             return -1;
         }
 
@@ -908,7 +957,7 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
             }
         }
 
-        xtcp_debug("socket %d has event %d [%d/%d]", sdata->sockfd, ev, 
+        utp_debug("socket %d has event %d [%d/%d]", sdata->sockfd, ev, 
                 sdata->eof, sdata->closed);
         if(!sdata->closed && ev) {
             events[nfds].data.fd = sdata->sockfd;
@@ -922,30 +971,30 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
 
     free(evs);
 
-    xtcp_debug("returning %d events", nfds);
+    utp_debug("returning %d events", nfds);
 
     return nfds;
 }
 
 int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *expectfds, struct timeval *timeout) {
-    xtcp_debug("select on %d fds", nfds);
+    utp_debug("select on %d fds", nfds);
 
     int fd;
     int ret = global_data.libc.select(nfds, readfds, writefds, expectfds, timeout);
 
     if(ret < 0) {
-        xtcp_debug("select return error %d: %s", ret, strerror(errno));
+        utp_debug("select return error %d: %s", ret, strerror(errno));
         return ret;
     }
 
-    xtcp_debug("select returned %d", ret);
+    utp_debug("select returned %d", ret);
 
     for(fd = 0; fd < nfds; fd++) {
         if(readfds && FD_ISSET(fd, readfds)) {
-            xtcp_debug("fd %d is ready to read", fd);
+            utp_debug("fd %d is ready to read", fd);
         }
         if(writefds && FD_ISSET(fd, writefds)) {
-            xtcp_debug("fd %d is ready to write", fd);
+            utp_debug("fd %d is ready to write", fd);
         }
 
         utp_context *ctx = (utp_context *)g_hash_table_lookup(global_data.sockfd_to_context, 
@@ -953,14 +1002,14 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *expectfds, struc
         if(ctx) {
             utp_context_data_t *ctxdata = (utp_context_data_t *)utp_context_get_userdata(ctx);
             if(!ctxdata) {
-                xtcp_error("no context data for socket %d", fd);
+                utp_warning("no context data for socket %d", fd);
                 return -1;
             }
 
             utp_read_context(ctx, ctxdata);
 
             if(g_queue_get_length(ctxdata->socketq) > 0 && readfds && !FD_ISSET(fd, readfds)) {
-                xtcp_debug("socket to accept, marking %d as readable", fd);
+                utp_debug("socket to accept, marking %d as readable", fd);
                 FD_SET(fd, readfds);
                 ret++;
             }
@@ -972,7 +1021,7 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *expectfds, struc
         if(s) {
             utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
             if(!sdata) {
-                xtcp_error("no utp socket for socket %d", fd);
+                utp_warning("no utp socket for socket %d", fd);
                 return -1;
             }
 
@@ -980,7 +1029,7 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *expectfds, struc
                 FD_CLR(fd, readfds);
                 ret--;
                 if(sdata->readbuf->len > 0) {
-                    xtcp_debug("marking fd %d as readable", fd);
+                    utp_debug("marking fd %d as readable", fd);
                     FD_SET(fd, readfds);
                     ret++;
                 }
@@ -990,7 +1039,7 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *expectfds, struc
                 FD_CLR(fd, writefds);
                 ret--;
                 if(sdata->writeable) {
-                    xtcp_debug("marking fd %d as writeable", fd);
+                    utp_debug("marking fd %d as writeable", fd);
                     FD_SET(fd, writefds);
                     ret++;
                 }
@@ -998,7 +1047,7 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *expectfds, struc
         }
     }
 
-    xtcp_debug("select returning %d", ret);
+    utp_debug("select returning %d", ret);
 
     return ret;
 }

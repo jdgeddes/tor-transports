@@ -378,7 +378,7 @@ void worker_schedulePacket(Packet* packet) {
 
     /* don't drop control packets with length 0, otherwise congestion
      * control has problems responding to packet loss */
-    if(chance <= reliability || packet_getPayloadLength(packet) == 0) {
+    if(chance <= reliability || packet_getPayloadLength(packet) <= 20) {
         /* the sender's packet will make it through, find latency */
         gdouble latency = topology_getLatency(worker_getTopology(), srcAddress, dstAddress);
         SimulationTime delay = (SimulationTime) ceil(latency * SIMTIME_ONE_MILLISECOND);

@@ -26,37 +26,12 @@ static const gchar* _logging_getNewLogLevelString(GLogLevelFlags log_level) {
 }
 
 /* this func is called whenever g_logv is called, not just in our log code */
-void logging_handleLog(const gchar *log_domain, GLogLevelFlags log_level, const gchar *message, gpointer user_data) {
-    /* GLogLevelFlags* configuredLogLevel = user_data; */
-    const gchar* logDomainStr = log_domain ? log_domain : "shadow";
-    const gchar* messageStr = message ? message : "n/a";
-
+void logging_handleLog(const gchar *msgLogDomain, GLogLevelFlags msgLogLevel, const gchar *message, gpointer user_data) {
     /* check again if the message should be filtered */
-    if(worker_isFiltered(log_level)) {
+    if(worker_isFiltered(msgLogLevel)) {
         return;
     }
 
-    gulong hours = 0, minutes = 0, seconds = 0, microseconds = 0;
-    gulong elapsed = 0;
-    if(worker_isAlive()) {
-        elapsed = (gulong) g_timer_elapsed(worker_getRunTimer(), &microseconds);
-        hours = elapsed / 3600;
-        elapsed %= 3600;
-        minutes = elapsed / 60;
-        seconds = elapsed % 60;
-    }
-
-    g_print("%02lu:%02lu:%02lu.%06lu %s\n", hours, minutes, seconds, microseconds, messageStr);
-
-    if(log_level & G_LOG_LEVEL_ERROR) {
-        /* error level logs always abort, but glibs messages are not that useful.
-         * lets override that with our own debug info and preemtively abort */
-        utility_assert(FALSE && "failure due to error-level log message");
-    }
-}
-
-void logging_logv(const gchar *msgLogDomain, GLogLevelFlags msgLogLevel,
-        const gchar* functionName, const gchar *format, va_list vargs) {
     /* this is called by worker threads, so we have access to worker */
 
     /* see if we can avoid some work because the message is filtered anyway */
@@ -65,8 +40,6 @@ void logging_logv(const gchar *msgLogDomain, GLogLevelFlags msgLogLevel,
         return;
     }
 
-    const gchar* logFunctionStr = functionName ? functionName : "n/a";
-    const gchar* formatStr = format ? format : "n/a";
     const gchar* logLevelStr = _logging_getNewLogLevelString(msgLogLevel);
 
     SimulationTime currentTime = worker_isAlive() ? worker_getCurrentTime() : SIMTIME_INVALID;
@@ -107,17 +80,52 @@ void logging_logv(const gchar *msgLogDomain, GLogLevelFlags msgLogLevel,
 
     /* the function name - no need to free this */
     GString* newLogFormatBuffer = g_string_new(NULL);
-    g_string_printf(newLogFormatBuffer, "[thread-%i] %s [%s-%s] [%s] [%s] %s",
-            workerThreadID, clockString, logDomainStr, logLevelStr, nodeString, logFunctionStr, formatStr);
+    g_string_printf(newLogFormatBuffer, "[thread-%i] %s [%s-%s] [%s]",
+            workerThreadID, clockString, logDomainStr, logLevelStr, nodeString);
 
     /* get the new format out of our string buffer and log it */
     gchar* newLogFormat = g_string_free(newLogFormatBuffer, FALSE);
-    g_logv(logDomainStr, msgLogLevel, newLogFormat, vargs);
+
+    gulong hours = 0, minutes = 0, seconds = 0, microseconds = 0;
+    gulong elapsed = 0;
+    if(worker_isAlive()) {
+        elapsed = (gulong) g_timer_elapsed(worker_getRunTimer(), &microseconds);
+        hours = elapsed / 3600;
+        elapsed %= 3600;
+        minutes = elapsed / 60;
+        seconds = elapsed % 60;
+    }
+
+    g_print("%02lu:%02lu:%02lu.%06lu %s %s\n", hours, minutes, seconds, microseconds, newLogFormat, message);
 
     /* cleanup */
     g_free(newLogFormat);
     g_free(clockString);
     g_free(nodeString);
+
+    if(msgLogLevel & G_LOG_LEVEL_ERROR) {
+        /* error level logs always abort, but glibs messages are not that useful.
+         * lets override that with our own debug info and preemtively abort */
+        utility_assert(FALSE && "failure due to error-level log message");
+    }
+}
+
+void logging_logv(const gchar *msgLogDomain, GLogLevelFlags msgLogLevel,
+        const gchar* functionName, const gchar *format, va_list vargs) {
+
+    const gchar* logFunctionStr = functionName ? functionName : "n/a";
+    const gchar* formatStr = format ? format : "n/a";
+
+    /* the function name - no need to free this */
+    GString* newLogFormatBuffer = g_string_new(NULL);
+    g_string_printf(newLogFormatBuffer, "[%s] %s", logFunctionStr, formatStr);
+
+    /* get the new format out of our string buffer and log it */
+    gchar* newLogFormat = g_string_free(newLogFormatBuffer, FALSE);
+    g_logv(msgLogDomain, msgLogLevel, newLogFormat, vargs);
+
+    /* cleanup */
+    g_free(newLogFormat);
 }
 
 void logging_log(const gchar *log_domain, GLogLevelFlags log_level, const gchar* functionName, const gchar *format, ...) {
