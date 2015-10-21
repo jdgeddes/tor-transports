@@ -233,6 +233,9 @@ void utp_destroy_socket(int sockfd) {
     if(ctx) {
         utp_context_data_t *ctxdata = (utp_context_data_t *)utp_context_get_userdata(ctx);
 
+        /* free the socket queue */
+        g_queue_free(ctxdata->socketq);
+
         /* remove the sockfd and timerfd from epoll */
         struct epoll_event ev;
 
@@ -253,6 +256,9 @@ void utp_destroy_socket(int sockfd) {
 
     if(s) {
         utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
+
+        g_byte_array_free(sdata->readbuf, TRUE);
+
         free(sdata);
         g_hash_table_remove(global_data.sockfd_to_socket, GINT_TO_POINTER(sockfd));
     }
