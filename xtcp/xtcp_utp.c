@@ -780,7 +780,7 @@ ssize_t utp_read(int sockfd, void *buf, size_t len, int flags) {
     utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
 
     /* if closed return 0 so application knows */
-    if(sdata->eof || sdata->closed) {
+    if(sdata->readbuf->len == 0 && (sdata->eof || sdata->closed)) {
         return 0;
     }
 
