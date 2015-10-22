@@ -395,7 +395,7 @@ uint64 utp_on_read_cb(utp_callback_arguments *a) {
     sdata->readbuf = g_byte_array_append(sdata->readbuf, (unsigned char *)a->buf, a->len);
     utp_read_drained(s);
 
-    utp_info("[%p] read in %lu bytes on %d", s, a->len, sdata->sockfd);
+    utp_info("[%p] read in %lu bytes on %d (readbuf len %d)", s, a->len, sdata->sockfd, sdata->readbuf->len);
 
 	return 0;
 }
@@ -799,6 +799,8 @@ ssize_t utp_read(int sockfd, void *buf, size_t len, int flags) {
 
     memcpy(buf, sdata->readbuf->data, len);
     sdata->readbuf = g_byte_array_remove_range(sdata->readbuf, 0, len);
+
+    utp_debug("read in %d bytes (%d remaining)", len, sdata->readbuf->len);
 
     return len;
 }
