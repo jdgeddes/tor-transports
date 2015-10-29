@@ -20,6 +20,8 @@
 #define ONE_MILLISECOND 1000000
 #define ONE_SECOND 1000000000
 
+#define TARGET_DELAY 10000*1000
+
 typedef enum UTPLogLevel {
     UTP_ERROR = 1 << 2,
     UTP_CRITICAL = 1 << 3,
@@ -30,11 +32,16 @@ typedef enum UTPLogLevel {
 } UTPLogLevel;
 
 #define utp_debug(...) utp_log(UTP_DEBUG, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+//#define utp_debug(...) 
 #define utp_info(...) utp_log(UTP_INFO, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
 #define utp_message(...) utp_log(UTP_MESSAGE, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
 #define utp_warning(...) utp_log(UTP_WARNING, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
 #define utp_critical(...) utp_log(UTP_CRITICAL, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
 #define utp_error(...) utp_log(UTP_ERROR, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__)
+
+#define SOCK_GET_EVENT(sockfd) (GPOINTER_TO_INT(g_hash_table_lookup(global_data.socket_events, GINT_TO_POINTER(sockfd))))
+#define SOCK_SET_EVENT(sockfd, event) (event ? (g_hash_table_insert(global_data.socket_events, GINT_TO_POINTER(sockfd), GINT_TO_POINTER(event))) \
+        : g_hash_table_remove(global_data.socket_events, GINT_TO_POINTER(sockfd)))
 
 static void init() __attribute__((constructor));
 
@@ -85,6 +92,7 @@ typedef struct global_data_s {
     GHashTable *timerfd_to_context;
     GHashTable *sockfd_to_context;
     GHashTable *sockfd_to_socket;
+    GHashTable *socket_events;
 } global_data_t;
 
 global_data_t global_data;
@@ -135,8 +143,9 @@ void utp_log(UTPLogLevel log_level, const char *filename, const char *function_n
     g_string_append_printf(buffer, "[%s@%s:%d] %s", function_name, filename, lineno, format);
     g_logv(G_LOG_DOMAIN, (GLogLevelFlags)log_level, buffer->str, vargs);
 
-    va_end(vargs);
+    g_string_free(buffer, TRUE);
 
+    va_end(vargs);
 }
 
 void init_lib() {
@@ -157,6 +166,7 @@ void init_lib() {
     global_data.timerfd_to_context = g_hash_table_new(g_direct_hash, g_direct_equal);
     global_data.sockfd_to_context = g_hash_table_new(g_direct_hash, g_direct_equal);
     global_data.sockfd_to_socket = g_hash_table_new(g_direct_hash, g_direct_equal);
+    global_data.socket_events = g_hash_table_new(g_direct_hash, g_direct_equal);
 
     utp_info("initialized all interposed functions");
 }
@@ -247,8 +257,8 @@ void utp_destroy_socket(int sockfd) {
         ev.events = EPOLLIN | EPOLLET;
         global_data.libc.epoll_ctl(ctxdata->epollfd, EPOLL_CTL_DEL, ctxdata->timerfd, &ev);
 
-        close(ctxdata->timerfd);
-        close(ctxdata->sockfd);
+        global_data.libc.close(ctxdata->timerfd);
+        global_data.libc.close(ctxdata->sockfd);
         free(ctxdata);
 
         g_hash_table_remove(global_data.sockfd_to_context, GINT_TO_POINTER(sockfd));
@@ -258,10 +268,13 @@ void utp_destroy_socket(int sockfd) {
         utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
 
         g_byte_array_free(sdata->readbuf, TRUE);
-
         free(sdata);
+
         g_hash_table_remove(global_data.sockfd_to_socket, GINT_TO_POINTER(sockfd));
     }
+
+    /* remove from the readable/writable socket hash tables */
+    SOCK_SET_EVENT(sockfd, 0);
 }
 
 
@@ -305,6 +318,11 @@ uint64 utp_on_state_change_cb(utp_callback_arguments *a) {
 		case UTP_STATE_WRITABLE:
             sdata->writeable = 1;
 
+            if(sdata->connected && !sdata->closed) {
+                int event = SOCK_GET_EVENT(sdata->sockfd) | EPOLLOUT;
+                SOCK_SET_EVENT(sdata->sockfd, event);
+            }
+
             utp_context *ctx = (utp_context *)g_hash_table_lookup(global_data.sockfd_to_context, 
                     GINT_TO_POINTER(sdata->sockfd));
             if(ctx) {
@@ -319,6 +337,7 @@ uint64 utp_on_state_change_cb(utp_callback_arguments *a) {
 		case UTP_STATE_EOF:
 			utp_info("[utp] received EOF from socket");
             sdata->eof = 1;
+            SOCK_SET_EVENT(sdata->sockfd, EPOLLIN);
 			break;
 
 		case UTP_STATE_DESTROYING:
@@ -352,6 +371,8 @@ uint64 utp_on_error_cb(utp_callback_arguments *a) {
 
     utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(a->socket);
     sdata->closed = 1;
+    SOCK_SET_EVENT(sdata->sockfd, 0);
+
 	return 0;
 }
 
@@ -366,11 +387,13 @@ uint64 utp_on_accept_cb(utp_callback_arguments *a) {
         return -1;
     }
 
+    utp_setsockopt(s, UTP_TARGET_DELAY, TARGET_DELAY);
+    utp_info("target delay set to %d", utp_getsockopt(s, UTP_TARGET_DELAY));
+
     utp_socket_data_t *sdata = (utp_socket_data_t *)malloc(sizeof(*sdata));
     memset(sdata, 0, sizeof(*sdata));
     sdata->readbuf = g_byte_array_new();
     sdata->connected = 0;
-    sdata->writeable = 1;
     utp_set_userdata(s, sdata);
 
     /* push socket into incoming queue */
@@ -394,6 +417,12 @@ uint64 utp_on_read_cb(utp_callback_arguments *a) {
     utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
     sdata->readbuf = g_byte_array_append(sdata->readbuf, (unsigned char *)a->buf, a->len);
     utp_read_drained(s);
+
+    /* insert into hash table marking as readable */
+    if(sdata->connected && !sdata->closed) {
+        int event = SOCK_GET_EVENT(sdata->sockfd) | EPOLLIN;
+        SOCK_SET_EVENT(sdata->sockfd, event);
+    }
 
     utp_info("[%p] read in %lu bytes on %d (readbuf len %d)", s, a->len, sdata->sockfd, sdata->readbuf->len);
 
@@ -552,12 +581,12 @@ int utp_read_context(utp_context *ctx, utp_context_data_t *ctxdata) {
  */
 
 int socket(int domain, int type, int protocol) {
-    if(!(type & SOCK_STREAM)) {
+    if(!(type & 6)) {
         return global_data.libc.socket(domain, type, protocol);
     }
 
     /* switch type from STREAM to DGRAM */
-    type = (type & ~SOCK_STREAM) | SOCK_DGRAM;
+    type = (type & ~0x6) | SOCK_DGRAM;
     int sockfd = global_data.libc.socket(AF_INET, type, IPPROTO_UDP);
     if(sockfd < 0) {
         utp_warning("error creating sockfd");
@@ -659,7 +688,10 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 
 
     utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
+    sdata->writeable = 1;
     sdata->sockfd = newsockfd;
+
+    SOCK_SET_EVENT(newsockfd, EPOLLOUT);
 
     g_hash_table_insert(global_data.sockfd_to_socket, GINT_TO_POINTER(newsockfd), s);
 
@@ -701,6 +733,8 @@ int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
     }
 
     utp_socket *s = utp_create_socket(ctx);
+    utp_setsockopt(s, UTP_TARGET_DELAY, TARGET_DELAY);
+
     utp_socket_data_t *sdata = (utp_socket_data_t *)malloc(sizeof(*sdata));
     memset(sdata, 0, sizeof(*sdata));
     sdata->readbuf = g_byte_array_new();
@@ -755,6 +789,13 @@ ssize_t utp_send(int sockfd, const void *buf, size_t len, int flags) {
         global_data.libc.epoll_ctl(ctxdata->epollfd, EPOLL_CTL_MOD, sockfd, &ev);
 
         sdata->writeable = 0;
+
+        if(sdata->connected && !sdata->closed) {
+            int event = SOCK_GET_EVENT(sockfd);
+            event = event & ~EPOLLOUT;
+            SOCK_SET_EVENT(sockfd, event);
+        }
+
         errno = EWOULDBLOCK;
         return -1;
     }
@@ -779,6 +820,8 @@ ssize_t utp_read(int sockfd, void *buf, size_t len, int flags) {
     utp_context_data_t *ctxdata = (utp_context_data_t *)utp_context_get_userdata(ctx);
     utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
 
+    utp_debug("socket buflen %d eof %d closed %d", sdata->readbuf->len, sdata->eof, sdata->closed);
+
     /* if closed return 0 so application knows */
     if(sdata->readbuf->len == 0 && (sdata->eof || sdata->closed)) {
         return 0;
@@ -799,6 +842,13 @@ ssize_t utp_read(int sockfd, void *buf, size_t len, int flags) {
 
     memcpy(buf, sdata->readbuf->data, len);
     sdata->readbuf = g_byte_array_remove_range(sdata->readbuf, 0, len);
+
+    /* if readbuf is empty, socket is no longer readable */
+    if(sdata->connected && !sdata->closed && sdata->readbuf->len == 0) {
+        int event = SOCK_GET_EVENT(sdata->sockfd);
+        event = event & (~EPOLLIN);
+        SOCK_SET_EVENT(sdata->sockfd, event);
+    }
 
     utp_debug("read in %d bytes (%d remaining)", len, sdata->readbuf->len);
 
@@ -847,6 +897,7 @@ int close(int fd) {
 
     utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
     sdata->closed = 1;
+    SOCK_SET_EVENT(sdata->sockfd, 0);
 
     if(ctx) {
         utp_context_data_t *ctxdata = (utp_context_data_t *)utp_context_get_userdata(ctx);
@@ -882,6 +933,10 @@ int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
         ev.data.fd = ctxdata->timerfd;
         ev.events = EPOLLIN | EPOLLET;
         global_data.libc.epoll_ctl(epfd, EPOLL_CTL_ADD, ctxdata->timerfd, &ev);
+    }
+
+    if((ctx || s) && op == EPOLL_CTL_DEL) {
+        return 0;
     }
 
     ev.data.fd = fd;
@@ -943,40 +998,25 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
         }
     }
 
-    GList *iter = g_hash_table_get_values(global_data.sockfd_to_socket);
-    while(iter) {
-        /*utp_socket *s = (utp_socket *)sockets[idx];*/
-        utp_socket *s = (utp_socket *)iter->data;
-        utp_socket_data_t *sdata = (utp_socket_data_t *)utp_get_userdata(s);
-        if(!sdata) {
-            utp_warning("no utp socket for socket %p", s);
-            return -1;
-        }
+    GList *socket_list = g_hash_table_get_keys(global_data.socket_events);
 
-        int ev = 0;
-        if(sdata->eof) {
-            ev |= EPOLLIN;
-        } else if(sdata->connected) {
-            if(sdata->readbuf->len > 0) {
-                ev |= EPOLLIN;
-            }
-            if(sdata->writeable) {
-                ev |= EPOLLOUT;
-            }
-        }
+    utp_debug("we have %d sockets with events", g_list_length(socket_list));
 
-        utp_debug("socket %d has event %d [%d/%d]", sdata->sockfd, ev, 
-                sdata->eof, sdata->closed);
-        if(!sdata->closed && ev) {
-            events[nfds].data.fd = sdata->sockfd;
-            events[nfds].events = ev;
-            nfds++;
-        }
+    GList *iter = socket_list;
+    while(iter && nfds < maxevents) {
+        int sockfd = GPOINTER_TO_INT(iter->data);
+        int ev = SOCK_GET_EVENT(sockfd);
 
-        /*idx++;*/
-        iter = iter->next;
+        utp_debug("sockfd %d has event ev %d", sockfd, ev);
+
+        events[nfds].data.fd = sockfd;
+        events[nfds].events = ev;
+        nfds++;
+
+        iter = g_list_next(iter);
     }
 
+    g_list_free(socket_list);
     free(evs);
 
     utp_debug("returning %d events", nfds);
