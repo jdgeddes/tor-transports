@@ -367,7 +367,7 @@ void worker_schedulePacket(Packet* packet) {
     Address* dstAddress = dns_resolveIPToAddress(worker_getDNS(), (guint32) dstIP);
 
     if(!srcAddress || !dstAddress) {
-        error("unable to schedule packet because of null addresses");
+        warning("unable to schedule packet because of null addresses");
         return;
     }
 

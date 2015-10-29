@@ -103,11 +103,11 @@ void logging_handleLog(const gchar *msgLogDomain, GLogLevelFlags msgLogLevel, co
     g_free(clockString);
     g_free(nodeString);
 
-    /*if(msgLogLevel & G_LOG_LEVEL_ERROR) {*/
-        /* error level logs always abort, but glibs messages are not that useful.
-         * lets override that with our own debug info and preemtively abort */
-        /*utility_assert(FALSE && "failure due to error-level log message");*/
-    /*}*/
+    if(msgLogLevel & G_LOG_LEVEL_ERROR) {
+         /*error level logs always abort, but glibs messages are not that useful.*/
+         /*lets override that with our own debug info and preemtively abort */
+        utility_assert(FALSE && "failure due to error-level log message");
+    }
 }
 
 void logging_logv(const gchar *msgLogDomain, GLogLevelFlags msgLogLevel,

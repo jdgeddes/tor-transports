@@ -61,7 +61,8 @@
  *
  * @see logging_log()
  */
-#define debug(...)      logging_log(G_LOG_DOMAIN, G_LOG_LEVEL_DEBUG, __FUNCTION__, __VA_ARGS__)
+//#define debug(...)      logging_log(G_LOG_DOMAIN, G_LOG_LEVEL_DEBUG, __FUNCTION__, __VA_ARGS__)
+#define debug(...)      
 
 /**
  * A log handler compatible with the GLib logging subsystem.

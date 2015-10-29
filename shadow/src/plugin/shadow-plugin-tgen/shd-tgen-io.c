@@ -199,6 +199,11 @@ void tgenio_loopOnce(TGenIO* io) {
         gboolean in = (epevs[i].events & EPOLLIN) ? TRUE : FALSE;
         gboolean out = (epevs[i].events & EPOLLOUT) ? TRUE : FALSE;
         TGenIOChild* child = g_hash_table_lookup(io->children, &epevs[i].data.fd);
+        if(!child) {
+            tgen_warning("no child for fd %d.  maybe have been closed by previous action.",
+                    epevs[i].data.fd);
+            continue;
+        }
         _tgenio_helper(io, child, in, out);
     }
 }

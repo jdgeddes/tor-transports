@@ -28,7 +28,7 @@ void tcpCongestion_init(TCPCongestion* congestion, TCPCongestionFunctionTable* f
     congestion->window = window;
     congestion->threshold = threshold;
     congestion->state = TCP_CCS_SLOWSTART;
-    congestion->logLevel = G_LOG_LEVEL_DEBUG;
+    congestion->logLevel = G_LOG_LEVEL_INFO;
 }
 
 void tcpCongestion_avoidance(TCPCongestion* congestion, gint inFlight, gint packetsAcked, gint ack) {

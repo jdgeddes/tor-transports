@@ -11,6 +11,9 @@ include_directories(${RT_INCLUDES} ${DL_INCLUDES} ${M_INCLUDES} ${IGRAPH_INCLUDE
 ## make sure shadow.h is in the include path
 include_directories(${CMAKE_SOURCE_DIR}/src/)
 
+#include_directories(/usr/include/x86_64-linux-gnu/c++/4.8)
+#add_definitions(-D"__float128=long double")
+
 ## build plug-in libraries and other components
 add_subdirectory(plugin)
 
