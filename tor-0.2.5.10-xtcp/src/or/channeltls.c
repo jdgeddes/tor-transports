@@ -43,6 +43,9 @@ uint64_t stats_n_authenticate_cells_processed = 0;
 /** How many CELL_AUTHORIZE cells have we received, ever? */
 uint64_t stats_n_authorize_cells_processed = 0;
 
+/** Active listener, if any */
+channel_listener_t *channel_tls_listener = NULL;
+
 /* Utility function declarations */
 static void channel_tls_common_init(channel_tls_t *tlschan);
 
@@ -71,15 +74,11 @@ static int channel_tls_write_packed_cell_method(channel_t *chan,
 static int channel_tls_write_var_cell_method(channel_t *chan,
                                              var_cell_t *var_cell);
 
-static void channel_tls_handle_cell_method(cell_t *cell, or_connection_t *conn);
-static void channel_tls_handle_var_cell_method(var_cell_t *var_cell, or_connection_t *conn);
+/* channel_listener_tls_t method declarations */
 
-
-static void channel_tls_handle_state_change_on_orconn_method(channel_t *chan,
-                                          or_connection_t *conn,
-                                          uint8_t old_state,
-                                          uint8_t state);
-static void channel_tls_new_orconn_method(channel_t *chan, or_connection_t *orconn);
+static void channel_tls_listener_close_method(channel_listener_t *chan_l);
+static const char *
+channel_tls_listener_describe_transport_method(channel_listener_t *chan_l);
 
 /** Handle incoming cells for the handshake stuff here rather than
  * passing them on up. */
@@ -128,12 +127,6 @@ channel_tls_common_init(channel_tls_t *tlschan)
   chan->write_packed_cell = channel_tls_write_packed_cell_method;
   chan->write_var_cell = channel_tls_write_var_cell_method;
 
-  chan->handle_cell = channel_tls_handle_cell_method;
-  chan->handle_var_cell = channel_tls_handle_var_cell_method;
-
-  chan->handle_state_change_on_orconn = channel_tls_handle_state_change_on_orconn_method;
-  chan->new_orconn = channel_tls_new_orconn_method;
-
   chan->cmux = circuitmux_alloc();
   if (cell_ewma_enabled()) {
     circuitmux_set_policy(chan->cmux, &ewma_policy);
@@ -178,7 +171,7 @@ channel_tls_connect(const tor_addr_t *addr, uint16_t port,
   channel_mark_outgoing(chan);
 
   /* Set up or_connection stuff */
-  tlschan->conn = connection_or_connect(addr, port, id_digest, chan);
+  tlschan->conn = connection_or_connect(addr, port, id_digest, tlschan);
   /* connection_or_connect() will fill in tlschan->conn */
   if (!(tlschan->conn)) {
     chan->reason_for_closing = CHANNEL_CLOSE_FOR_ERROR;
@@ -205,6 +198,87 @@ channel_tls_connect(const tor_addr_t *addr, uint16_t port,
 }
 
 /**
+ * Return the current channel_tls_t listener
+ *
+ * Returns the current channel listener for incoming TLS connections, or
+ * NULL if none has been established
+ */
+
+channel_listener_t *
+channel_tls_get_listener(void)
+{
+  return channel_tls_listener;
+}
+
+/**
+ * Start a channel_tls_t listener if necessary
+ *
+ * Return the current channel_tls_t listener, or start one if we haven't yet,
+ * and return that.
+ */
+
+channel_listener_t *
+channel_tls_start_listener(void)
+{
+  channel_listener_t *listener;
+
+  if (!channel_tls_listener) {
+    listener = tor_malloc_zero(sizeof(*listener));
+    channel_init_listener(listener);
+    listener->state = CHANNEL_LISTENER_STATE_LISTENING;
+    listener->close = channel_tls_listener_close_method;
+    listener->describe_transport =
+      channel_tls_listener_describe_transport_method;
+
+    channel_tls_listener = listener;
+
+    log_debug(LD_CHANNEL,
+              "Starting TLS channel listener %p with global id " U64_FORMAT,
+              listener, U64_PRINTF_ARG(listener->global_identifier));
+
+    channel_listener_register(listener);
+  } else listener = channel_tls_listener;
+
+  return listener;
+}
+
+/**
+ * Free everything on shutdown
+ *
+ * Not much to do here, since channel_free_all() takes care of a lot, but let's
+ * get rid of the listener.
+ */
+
+void
+channel_tls_free_all(void)
+{
+  channel_listener_t *old_listener = NULL;
+
+  log_debug(LD_CHANNEL,
+            "Shutting down TLS channels...");
+
+  if (channel_tls_listener) {
+    /*
+     * When we close it, channel_tls_listener will get nulled out, so save
+     * a pointer so we can free it.
+     */
+    old_listener = channel_tls_listener;
+    log_debug(LD_CHANNEL,
+              "Closing channel_tls_listener with ID " U64_FORMAT
+              " at %p.",
+              U64_PRINTF_ARG(old_listener->global_identifier),
+              old_listener);
+    channel_listener_unregister(old_listener);
+    channel_listener_mark_for_close(old_listener);
+    channel_listener_free(old_listener);
+    tor_assert(channel_tls_listener == NULL);
+  }
+
+  log_debug(LD_CHANNEL,
+            "Done shutting down TLS channels");
+}
+
+/**
  * Create a new channel around an incoming or_connection_t
  */
 
@@ -221,18 +295,26 @@ channel_tls_handle_incoming(or_connection_t *orconn)
 
   /* Link the channel and orconn to each other */
   tlschan->conn = orconn;
+  orconn->chan = tlschan;
+
+  if (is_local_addr(&(TO_CONN(orconn)->addr))) {
+    log_debug(LD_CHANNEL,
+              "Marking new incoming channel " U64_FORMAT " at %p as local",
+              U64_PRINTF_ARG(chan->global_identifier), chan);
+    channel_mark_local(chan);
+  } else {
+    log_debug(LD_CHANNEL,
+              "Marking new incoming channel " U64_FORMAT " at %p as remote",
+              U64_PRINTF_ARG(chan->global_identifier), chan);
+    channel_mark_remote(chan);
+  }
+
+  channel_mark_incoming(chan);
+
+  /* Register it */
+  channel_register(chan);
 
   return chan;
-}
-
-static void
-channel_tls_new_orconn_method(channel_t *chan, or_connection_t *conn)
-{
-  tor_assert(chan);
-  tor_assert(conn);
-
-  channel_tls_t *tlschan = BASE_CHAN_TO_TLS(chan);
-  tlschan->conn = conn;
 }
 
 /*********
@@ -687,6 +769,60 @@ channel_tls_write_var_cell_method(channel_t *chan, var_cell_t *var_cell)
  * Method implementations for channel_listener_t *
  ************************************************/
 
+/**
+ * Close a channel_listener_t
+ *
+ * This implements the close method for channel_listener_t
+ */
+
+static void
+channel_tls_listener_close_method(channel_listener_t *chan_l)
+{
+  tor_assert(chan_l);
+
+  /*
+   * Listeners we just go ahead and change state through to CLOSED, but
+   * make sure to check if they're channel_tls_listener to NULL it out.
+   */
+  if (chan_l == channel_tls_listener)
+    channel_tls_listener = NULL;
+
+  if (!(chan_l->state == CHANNEL_LISTENER_STATE_CLOSING ||
+        chan_l->state == CHANNEL_LISTENER_STATE_CLOSED ||
+        chan_l->state == CHANNEL_LISTENER_STATE_ERROR)) {
+    channel_listener_change_state(chan_l, CHANNEL_LISTENER_STATE_CLOSING);
+  }
+
+  if (chan_l->incoming_list) {
+    SMARTLIST_FOREACH_BEGIN(chan_l->incoming_list,
+                            channel_t *, ichan) {
+      channel_mark_for_close(ichan);
+    } SMARTLIST_FOREACH_END(ichan);
+
+    smartlist_free(chan_l->incoming_list);
+    chan_l->incoming_list = NULL;
+  }
+
+  if (!(chan_l->state == CHANNEL_LISTENER_STATE_CLOSED ||
+        chan_l->state == CHANNEL_LISTENER_STATE_ERROR)) {
+    channel_listener_change_state(chan_l, CHANNEL_LISTENER_STATE_CLOSED);
+  }
+}
+
+/**
+ * Describe the transport for a channel_listener_t
+ *
+ * This returns the string "TLS channel (listening)" to the upper
+ * layer.
+ */
+
+static const char *
+channel_tls_listener_describe_transport_method(channel_listener_t *chan_l)
+{
+  tor_assert(chan_l);
+
+  return "TLS channel (listening)";
+}
 
 /*******************************************************
  * Functions for handling events on an or_connection_t *
@@ -699,30 +835,30 @@ channel_tls_write_var_cell_method(channel_t *chan, var_cell_t *var_cell)
  * associated with this channel_tls_t changes state.
  */
 
-static void
-channel_tls_handle_state_change_on_orconn_method(channel_t *chan,
+void
+channel_tls_handle_state_change_on_orconn(channel_tls_t *chan,
                                           or_connection_t *conn,
                                           uint8_t old_state,
                                           uint8_t state)
 {
+  channel_t *base_chan;
+
   tor_assert(chan);
   tor_assert(conn);
   tor_assert(conn->chan == chan);
-
-  channel_tls_t *tlschan = BASE_CHAN_TO_TLS(chan);
-
-  tor_assert(tlschan->conn == conn);
+  tor_assert(chan->conn == conn);
   /* -Werror appeasement */
   tor_assert(old_state == old_state);
 
+  base_chan = TLS_CHAN_TO_BASE(chan);
 
   /* Make sure the base connection state makes sense - shouldn't be error,
    * closed or listening. */
 
-  tor_assert(chan->state == CHANNEL_STATE_OPENING ||
-             chan->state == CHANNEL_STATE_OPEN ||
-             chan->state == CHANNEL_STATE_MAINT ||
-             chan->state == CHANNEL_STATE_CLOSING);
+  tor_assert(base_chan->state == CHANNEL_STATE_OPENING ||
+             base_chan->state == CHANNEL_STATE_OPEN ||
+             base_chan->state == CHANNEL_STATE_MAINT ||
+             base_chan->state == CHANNEL_STATE_CLOSING);
 
   /* Did we just go to state open? */
   if (state == OR_CONN_STATE_OPEN) {
@@ -730,14 +866,14 @@ channel_tls_handle_state_change_on_orconn_method(channel_t *chan,
      * We can go to CHANNEL_STATE_OPEN from CHANNEL_STATE_OPENING or
      * CHANNEL_STATE_MAINT on this.
      */
-    channel_change_state(chan, CHANNEL_STATE_OPEN);
+    channel_change_state(base_chan, CHANNEL_STATE_OPEN);
   } else {
     /*
      * Not open, so from CHANNEL_STATE_OPEN we go to CHANNEL_STATE_MAINT,
      * otherwise no change.
      */
-    if (chan->state == CHANNEL_STATE_OPEN) {
-      channel_change_state(chan, CHANNEL_STATE_MAINT);
+    if (base_chan->state == CHANNEL_STATE_OPEN) {
+      channel_change_state(base_chan, CHANNEL_STATE_MAINT);
     }
   }
 }
@@ -840,10 +976,10 @@ channel_tls_time_process_cell(cell_t *cell, channel_tls_t *chan, int *time,
  * eventually will hand them off to command.c.
  */
 
-static void
-channel_tls_handle_cell_method(cell_t *cell, or_connection_t *conn)
+void
+channel_tls_handle_cell(cell_t *cell, or_connection_t *conn)
 {
-  channel_t *chan;
+  channel_tls_t *chan;
   int handshaking;
 
 #ifdef KEEP_TIMING_STATS
@@ -860,7 +996,6 @@ channel_tls_handle_cell_method(cell_t *cell, or_connection_t *conn)
   tor_assert(conn);
 
   chan = conn->chan;
-  channel_tls_t *tlschan = BASE_CHAN_TO_TLS(chan);
 
  if (!chan) {
    log_warn(LD_CHANNEL,
@@ -881,7 +1016,7 @@ channel_tls_handle_cell_method(cell_t *cell, or_connection_t *conn)
            "Received unexpected cell command %d in chan state %s / "
            "conn state %s; closing the connection.",
            (int)cell->command,
-           channel_state_to_string(chan->state),
+           channel_state_to_string(TLS_CHAN_TO_BASE(chan)->state),
            conn_state_to_string(CONN_TYPE_OR, TO_CONN(conn)->state));
     connection_or_close_for_error(conn, 0);
     return;
@@ -900,7 +1035,7 @@ channel_tls_handle_cell_method(cell_t *cell, or_connection_t *conn)
       break;
     case CELL_NETINFO:
       ++stats_n_netinfo_cells_processed;
-      PROCESS_CELL(netinfo, cell, tlschan);
+      PROCESS_CELL(netinfo, cell, chan);
       break;
     case CELL_CREATE:
     case CELL_CREATE_FAST:
@@ -915,7 +1050,7 @@ channel_tls_handle_cell_method(cell_t *cell, or_connection_t *conn)
        * These are all transport independent and we pass them up through the
        * channel_t mechanism.  They are ultimately handled in command.c.
        */
-      channel_queue_cell(chan, cell);
+      channel_queue_cell(TLS_CHAN_TO_BASE(chan), cell);
       break;
     default:
       log_fn(LOG_INFO, LD_PROTOCOL,
@@ -938,10 +1073,10 @@ channel_tls_handle_cell_method(cell_t *cell, or_connection_t *conn)
  * the mechanism in place for future use.
  */
 
-static void
-channel_tls_handle_var_cell_method(var_cell_t *var_cell, or_connection_t *conn)
+void
+channel_tls_handle_var_cell(var_cell_t *var_cell, or_connection_t *conn)
 {
-  channel_t *chan;
+  channel_tls_t *chan;
 
 #ifdef KEEP_TIMING_STATS
   /* how many of each cell have we seen so far this second? needs better
@@ -970,7 +1105,6 @@ channel_tls_handle_var_cell_method(var_cell_t *var_cell, or_connection_t *conn)
   tor_assert(conn);
 
   chan = conn->chan;
-  channel_tls_t *tlschan = BASE_CHAN_TO_TLS(chan);
 
   if (!chan) {
     log_warn(LD_CHANNEL,
@@ -991,8 +1125,8 @@ channel_tls_handle_var_cell_method(var_cell_t *var_cell, or_connection_t *conn)
                (int)(var_cell->command),
                conn_state_to_string(CONN_TYPE_OR, TO_CONN(conn)->state),
                TO_CONN(conn)->state,
-               channel_state_to_string(chan->state),
-               (int)(chan->state));
+               channel_state_to_string(TLS_CHAN_TO_BASE(chan)->state),
+               (int)(TLS_CHAN_TO_BASE(chan)->state));
         /*
          * The code in connection_or.c will tell channel_t to close for
          * error; it will go to CHANNEL_STATE_CLOSING, and then to
@@ -1018,13 +1152,13 @@ channel_tls_handle_var_cell_method(var_cell_t *var_cell, or_connection_t *conn)
                (int)(var_cell->command),
                conn_state_to_string(CONN_TYPE_OR, TO_CONN(conn)->state),
                (int)(TO_CONN(conn)->state),
-               channel_state_to_string(chan->state),
-               (int)(chan->state));
+               channel_state_to_string(TLS_CHAN_TO_BASE(chan)->state),
+               (int)(TLS_CHAN_TO_BASE(chan)->state));
         /* see above comment about CHANNEL_STATE_ERROR */
         connection_or_close_for_error(conn, 0);
         return;
       } else {
-        if (enter_v3_handshake_with_cell(var_cell, tlschan) < 0)
+        if (enter_v3_handshake_with_cell(var_cell, chan) < 0)
           return;
       }
       break;
@@ -1042,8 +1176,8 @@ channel_tls_handle_var_cell_method(var_cell_t *var_cell, or_connection_t *conn)
                (int)(var_cell->command),
                conn_state_to_string(CONN_TYPE_OR, TO_CONN(conn)->state),
                (int)(TO_CONN(conn)->state),
-               channel_state_to_string(chan->state),
-               (int)(chan->state),
+               channel_state_to_string(TLS_CHAN_TO_BASE(chan)->state),
+               (int)(TLS_CHAN_TO_BASE(chan)->state),
                (int)(conn->link_proto));
         return;
       }
@@ -1056,8 +1190,8 @@ channel_tls_handle_var_cell_method(var_cell_t *var_cell, or_connection_t *conn)
              (int)(var_cell->command),
              conn_state_to_string(CONN_TYPE_OR, TO_CONN(conn)->state),
              (int)(TO_CONN(conn)->state),
-             channel_state_to_string(chan->state),
-             (int)(chan->state));
+             channel_state_to_string(TLS_CHAN_TO_BASE(chan)->state),
+             (int)(TLS_CHAN_TO_BASE(chan)->state));
       return;
   }
 
@@ -1066,7 +1200,7 @@ channel_tls_handle_var_cell_method(var_cell_t *var_cell, or_connection_t *conn)
   switch (var_cell->command) {
     case CELL_VERSIONS:
       ++stats_n_versions_cells_processed;
-      PROCESS_CELL(versions, var_cell, tlschan);
+      PROCESS_CELL(versions, var_cell, chan);
       break;
     case CELL_VPADDING:
       ++stats_n_vpadding_cells_processed;
@@ -1074,15 +1208,15 @@ channel_tls_handle_var_cell_method(var_cell_t *var_cell, or_connection_t *conn)
       break;
     case CELL_CERTS:
       ++stats_n_certs_cells_processed;
-      PROCESS_CELL(certs, var_cell, tlschan);
+      PROCESS_CELL(certs, var_cell, chan);
       break;
     case CELL_AUTH_CHALLENGE:
       ++stats_n_auth_challenge_cells_processed;
-      PROCESS_CELL(auth_challenge, var_cell, tlschan);
+      PROCESS_CELL(auth_challenge, var_cell, chan);
       break;
     case CELL_AUTHENTICATE:
       ++stats_n_authenticate_cells_processed;
-      PROCESS_CELL(authenticate, var_cell, tlschan);
+      PROCESS_CELL(authenticate, var_cell, chan);
       break;
     case CELL_AUTHORIZE:
       ++stats_n_authorize_cells_processed;
@@ -1093,6 +1227,44 @@ channel_tls_handle_var_cell_method(var_cell_t *var_cell, or_connection_t *conn)
              "Variable-length cell of unknown type (%d) received.",
              (int)(var_cell->command));
       break;
+  }
+}
+
+/**
+ * Update channel marks after connection_or.c has changed an address
+ *
+ * This is called from connection_or_init_conn_from_address() after the
+ * connection's _base.addr or real_addr fields have potentially been changed
+ * so we can recalculate the local mark.  Notably, this happens when incoming
+ * connections are reverse-proxied and we only learn the real address of the
+ * remote router by looking it up in the consensus after we finish the
+ * handshake and know an authenticated identity digest.
+ */
+
+void
+channel_tls_update_marks(or_connection_t *conn)
+{
+  channel_t *chan = NULL;
+
+  tor_assert(conn);
+  tor_assert(conn->chan);
+
+  chan = TLS_CHAN_TO_BASE(conn->chan);
+
+  if (is_local_addr(&(TO_CONN(conn)->addr))) {
+    if (!channel_is_local(chan)) {
+      log_debug(LD_CHANNEL,
+                "Marking channel " U64_FORMAT " at %p as local",
+                U64_PRINTF_ARG(chan->global_identifier), chan);
+      channel_mark_local(chan);
+    }
+  } else {
+    if (channel_is_local(chan)) {
+      log_debug(LD_CHANNEL,
+                "Marking channel " U64_FORMAT " at %p as remote",
+                U64_PRINTF_ARG(chan->global_identifier), chan);
+      channel_mark_remote(chan);
+    }
   }
 }
 

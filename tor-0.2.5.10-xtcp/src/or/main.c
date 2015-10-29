@@ -1063,7 +1063,7 @@ run_connection_housekeeping(int i, time_t now)
   tor_assert(conn->outbuf);
 #endif
 
-  chan = or_conn->chan;
+  chan = TLS_CHAN_TO_BASE(or_conn->chan);
   tor_assert(chan);
 
   if (channel_num_circuits(chan) != 0) {
@@ -1073,7 +1073,7 @@ run_connection_housekeeping(int i, time_t now)
     have_any_circuits = 0;
   }
 
-  if (channel_is_bad_for_new_circs(chan) &&
+  if (channel_is_bad_for_new_circs(TLS_CHAN_TO_BASE(or_conn->chan)) &&
       ! have_any_circuits) {
     /* It's bad for new circuits, and has no unmarked circuits on it:
      * mark it now. */
@@ -2545,6 +2545,7 @@ tor_free_all(int postfork)
   circuit_free_all();
   entry_guards_free_all();
   pt_free_all();
+  channel_tls_free_all();
   channel_free_all();
   connection_free_all();
   buf_shrink_freelists(1);

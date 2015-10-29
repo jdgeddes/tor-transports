@@ -541,15 +541,15 @@ connection_free_(connection_t *conn)
       log_info(LD_CHANNEL,
                "Freeing orconn at %p, saw channel %p with ID "
                U64_FORMAT " left un-NULLed",
-               or_conn, or_conn->chan,
+               or_conn, TLS_CHAN_TO_BASE(or_conn->chan),
                U64_PRINTF_ARG(
-                 or_conn->chan->global_identifier));
-      if (!(or_conn->chan->state == CHANNEL_STATE_CLOSED ||
-            or_conn->chan->state == CHANNEL_STATE_ERROR)) {
-        channel_close_for_error(or_conn->chan);
+                 TLS_CHAN_TO_BASE(or_conn->chan)->global_identifier));
+      if (!(TLS_CHAN_TO_BASE(or_conn->chan)->state == CHANNEL_STATE_CLOSED ||
+            TLS_CHAN_TO_BASE(or_conn->chan)->state == CHANNEL_STATE_ERROR)) {
+        channel_close_for_error(TLS_CHAN_TO_BASE(or_conn->chan));
       }
 
-      /*or_conn->chan->conn = NULL;*/
+      or_conn->chan->conn = NULL;
       or_conn->chan = NULL;
     }
   }
@@ -1033,13 +1033,15 @@ connection_listener_new(const struct sockaddr *listensockaddr,
     if (is_tcp)
       start_reading = 1;
 
+    int is_xtcp = (type == CONN_TYPE_OR_LISTENER);
+
     tor_addr_from_sockaddr(&addr, listensockaddr, &usePort);
 
     log_notice(LD_NET, "Opening %s on %s",
                conn_type_to_string(type), fmt_addrport(&addr, usePort));
 
     s = tor_open_socket_nonblocking(tor_addr_family(&addr),
-                        is_tcp ? SOCK_STREAM : SOCK_DGRAM,
+                        (is_xtcp ? SOCK_XTCP : (is_tcp ? SOCK_STREAM: SOCK_DGRAM)),
                         is_tcp ? IPPROTO_TCP: IPPROTO_UDP);
     if (!SOCKET_OK(s)) {
       log_warn(LD_NET,"Socket creation failed: %s",
@@ -1536,7 +1538,8 @@ connection_init_accepted_conn(connection_t *conn,
  */
 int
 connection_connect(connection_t *conn, const char *address,
-                   const tor_addr_t *addr, uint16_t port, int *socket_error)
+                   const tor_addr_t *addr, uint16_t port, int *socket_error,
+                   int use_xtcp)
 {
   tor_socket_t s;
   int inprogress = 0;
@@ -1568,7 +1571,12 @@ connection_connect(connection_t *conn, const char *address,
     return -1;
   }
 
-  s = tor_open_socket_nonblocking(protocol_family,SOCK_STREAM,IPPROTO_TCP);
+  int type = SOCK_STREAM;
+  if(use_xtcp) {
+      type = SOCK_XTCP;
+  }
+
+  s = tor_open_socket_nonblocking(protocol_family,type,IPPROTO_TCP);
   if (! SOCKET_OK(s)) {
     *socket_error = tor_socket_errno(-1);
     log_warn(LD_NET,"Error creating network socket: %s",
@@ -3787,7 +3795,7 @@ connection_handle_write_impl(connection_t *conn, int force)
      * or_conn to check if it needs to geoip_change_dirreq_state() */
     /* XXXX move this to flushed_some or finished_flushing -NM */
     if (buf_datalen(conn->outbuf) == 0 && or_conn->chan)
-      channel_notify_flushed(or_conn->chan);
+      channel_notify_flushed(TLS_CHAN_TO_BASE(or_conn->chan));
 
     switch (result) {
       CASE_TOR_TLS_ERROR_ANY:

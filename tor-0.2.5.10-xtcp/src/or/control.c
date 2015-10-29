@@ -3822,7 +3822,7 @@ control_event_or_conn_status(or_connection_t *conn, or_conn_status_event_t tp,
       return 0;
     }
   if (conn->chan) {
-    ncircs = circuit_count_pending_on_channel(conn->chan);
+    ncircs = circuit_count_pending_on_channel(TLS_CHAN_TO_BASE(conn->chan));
   } else {
     ncircs = 0;
   }

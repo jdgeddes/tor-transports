@@ -15,6 +15,8 @@
 /* XXXX For buf_datalen in inline function */
 #include "buffers.h"
 
+#define SOCK_XTCP 6
+
 const char *conn_type_to_string(int type);
 const char *conn_state_to_string(int type, int state);
 
@@ -87,7 +89,7 @@ void connection_expire_held_open(void);
 
 int connection_connect(connection_t *conn, const char *address,
                        const tor_addr_t *addr,
-                       uint16_t port, int *socket_error);
+                       uint16_t port, int *socket_error, int use_xtcp);
 
 /** Maximum size of information that we can fit into SOCKS5 username
     or password fields. */
