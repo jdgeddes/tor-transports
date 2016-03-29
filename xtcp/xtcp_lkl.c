@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
 #include <sys/socket.h>
@@ -12,6 +13,8 @@
 #include <netinet/ip_icmp.h>
 #include <netdb.h>
 #include <glib.h>
+#include <sys/types.h>
+#include <ifaddrs.h>
 
 #include <lkl.h>
 #include <lkl_host.h>
@@ -46,6 +49,7 @@ typedef struct libc_func_s {
 
 typedef struct global_data_s {
     libc_func_t libc;
+    int initialized;
     GHashTable *lkl_sockets;
     GHashTable *lkl_epolld;
 } global_data_t;
@@ -80,8 +84,93 @@ static int lkl_call(int nr, int args, ...) {
 	return lkl_set_errno(lkl_syscall(nr, params));
 }
 
+static void lkl_print(const char *str, int len) {
+    char *s = (char *)malloc(sizeof(char) * len);
+    strncpy(s, str, len - 1);
+    s[len - 1] = 0;
+    xtcp_info("[LKL] %s", s);
+    free(s);
+}
+
+in_addr_t get_local_ip() {
+    struct ifaddrs *ifaddr, *ifa;
+
+    if(getifaddrs(&ifaddr) < 0) {
+        xtcp_warning("error calling getifaddrs: %s", strerror(errno));
+        return -1;
+    }
+
+    for(ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if(ifa->ifa_addr->sa_family == AF_INET) {
+            struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
+            return sin->sin_addr.s_addr;
+        }
+    }
+
+    return INADDR_NONE;
+}
+
+int lkl_create_device(char *hostname) {
+    struct lkl_netdev *nd = NULL;
+    int nd_id;
+
+    GString *interface = g_string_new("");
+    g_string_printf(interface, "%s-eth0", hostname);
+
+    gchar *devname = g_string_free(interface, FALSE);
+
+    /* setup device */
+    nd = lkl_netdev_tap_create(devname);
+    if(!nd) {
+        xtcp_error("could not create TAP device %s", devname);
+        return -1;
+    }
+    xtcp_info("added device for %s", devname);
+    free(devname);
+
+    nd_id = lkl_netdev_add(nd, NULL);
+    if(nd_id < 0) {
+        xtcp_error("failed to add netdev: %s", lkl_strerror(nd_id));
+        return -1;
+    }
+
+    return nd_id;
+}
+
+int lkl_setup_device(int nd_id,  in_addr_t ip) {
+    int ret, nd_ifindex;
+
+    nd_ifindex = lkl_netdev_get_ifindex(nd_id);
+    if(!nd_ifindex) {
+        xtcp_error("failed to get ifindex for netdev id %d: %s", nd_id, lkl_strerror(nd_ifindex));
+        return -1;
+
+    }
+    lkl_if_up(nd_ifindex);
+
+    int netmask_len = 24;
+    ret = lkl_if_set_ipv4(nd_ifindex, ip, netmask_len);
+    if(ret < 0) {
+        xtcp_error("failed to set IPv4 address: %s", lkl_strerror(ret));
+        return ret;
+    }
+
+    in_addr_t gateway = inet_addr("192.168.14.1");
+    ret = lkl_set_ipv4_gateway(gateway);
+    if(ret < 0) {
+        xtcp_error("failed to set IPv4 gateway: %s", lkl_strerror(ret));
+        /*return -1;*/
+    }
+
+    return 0;
+}
 
 void init_lib() {
+    if(global_data.initialized) {
+        xtcp_info("already initialized");
+        /*return;*/
+    }
+
     xtcp_info("initializing LKL xTCP library");
 
     SETSYM_OR_FAIL(socket);
@@ -104,90 +193,97 @@ void init_lib() {
     global_data.lkl_sockets = g_hash_table_new(g_direct_hash, g_direct_equal);
     global_data.lkl_epolld = g_hash_table_new(g_direct_hash, g_direct_equal);
 
-    struct lkl_netdev *nd = NULL;
-    int nd_id, nd_ifindex;
-    int ret, dev_null, i;
+    char *lkl_kernel_loaded = getenv("LKL_KERNEL_LOADED");
 
-    char *in_shadow = getenv("SHADOW_SPAWNED");
+    lkl_host_ops.print = lkl_print;
 
-    xtcp_info("in_shadow %s", (in_shadow ? in_shadow : "NULL"));
+    in_addr_t ip;
+    int ret;
 
-    /* setup device */
-    nd = lkl_netdev_tap_create("lkl0");
-    if(!nd) {
-        xtcp_error("initializing tap device lkl0 failed");
-        return;
+    if(!lkl_kernel_loaded) {
+        int devid = 0;
+
+        if(!getenv("SHADOW_SPAWNED")) {
+            devid = lkl_create_device("lkl");
+            if(devid < 0) {
+                xtcp_error("error creating LKL TAP device: %s", lkl_strerror(errno));
+                return;
+            }
+        }
+
+        /* start kernel */
+        ret = lkl_start_kernel(&lkl_host_ops, 64 * 1024 * 1024, "");
+        if(ret) {
+            xtcp_error("can't start kernel: %s", lkl_strerror(ret));
+            return;
+        }
+
+        xtcp_info("kernel started, bring up devices");
+
+        /* bring up localhost */
+        lkl_if_up(1);
+
+        if(devid >= 0) {
+            xtcp_info("setting IP address for dev %d", devid);
+
+            ip = inet_addr("192.168.14.2");
+            if(lkl_setup_device(devid, ip) < 0) {
+                xtcp_error("error setting up LKL device: %s", lkl_strerror(errno));
+                return;
+            }
+        }
+
+
+        /* fillup FDs up to LKL_FD_OFFSET */
+        ret = lkl_sys_mknod("/dev_null", LKL_S_IFCHR | 0600, LKL_MKDEV(1, 3));
+        int dev_null = lkl_sys_open("/dev_null", LKL_O_RDONLY, 0);
+        if (dev_null < 0) {
+            xtcp_error("failed to open /dev/null: %s", lkl_strerror(dev_null));
+            return;
+        }
+
+        int i;
+        for (i = 1; i < 512; i++) {
+            lkl_sys_dup(dev_null);
+        }
+
+        setenv("LKL_KERNEL_LOADED", "TRUE", 1);
+    } else {
+        char hostname[256];
+
+        ip = get_local_ip();
+        if(ip == INADDR_NONE) {
+            xtcp_error("could not get my IP: %s", strerror(errno));
+            return;
+        }
+
+        if(gethostname(hostname, sizeof(hostname)) < 0) {
+            xtcp_error("could not get my hostname: %s", strerror(errno));
+            return;
+        }
+
+        int devid = lkl_create_device(hostname);
+        if(devid < 0) {
+            xtcp_error("error creating device for %s: %s", hostname, lkl_strerror(errno));
+            return;
+        }
+
+        if(lkl_setup_device(devid, ip) < 0) {
+            xtcp_error("error setting up device for %s: %s", hostname, lkl_strerror(errno));
+            return;
+        }
     }
 
-    xtcp_info("created lkl0 device");
 
-    nd_id = lkl_netdev_add(nd, NULL);
-    if(nd_id < 0) {
-        xtcp_error("failed to add netdev: %s", lkl_strerror(nd_id));
-        return;
-    }
-
-    /* start kernel */
-    ret = lkl_start_kernel(&lkl_host_ops, 64 * 1024 * 1024, "");
-    if(ret) {
-        xtcp_error("can't start kernel: %s", lkl_strerror(ret));
-        return;
-    }
-
-    xtcp_info("kernel started, bring up devices");
-
-    /* bring up localhost */
-    lkl_if_up(1);
-
-    /* bring up lkl0 */
-    nd_ifindex = lkl_netdev_get_ifindex(nd_id);
-    if(!nd_ifindex) {
-        xtcp_error("failed to get ifindex for netdev id %d: %s", nd_id, lkl_strerror(nd_ifindex));
-        return;
-    
-    }
-
-    lkl_if_up(nd_ifindex);
-
-    xtcp_info("lo and lkl0 devices up");
-
-    /* assign IP to device */
-    unsigned int addr = inet_addr("192.168.14.2");
-    int netmask_len = 24;
-    ret = lkl_if_set_ipv4(nd_ifindex, addr, netmask_len);
-    if(ret < 0) {
-        xtcp_error("failed to set IPv4 address: %s", lkl_strerror(ret));
-        /*return;*/
-    }
-
-    xtcp_info("address assigned to lkl0");
-
-    /* set gateway for dev */
-    addr = inet_addr("192.168.14.1");
-    ret = lkl_set_ipv4_gateway(addr);
-    if(ret < 0) {
-        xtcp_error("failed to set IPv4 gateway: %s", lkl_strerror(ret));
-        /*return;*/
-    }
-
-
-	/* fillup FDs up to LKL_FD_OFFSET */
-	ret = lkl_sys_mknod("/dev_null", LKL_S_IFCHR | 0600, LKL_MKDEV(1, 3));
-	dev_null = lkl_sys_open("/dev_null", LKL_O_RDONLY, 0);
-	if (dev_null < 0) {
-		fprintf(stderr, "failed to open /dev/null: %s\n", lkl_strerror(dev_null));
-		return;
-	}
-
-	for (i = 1; i < 512; i++)
-		lkl_sys_dup(dev_null);
-
+    global_data.initialized = TRUE;
 
     xtcp_info("initialized all interposed functions");
 }
 
 void init() {
-    init_lib();
+    if(!getenv("SHADOW_SPANWED")) {
+       init_lib();
+    }
 }
 
 int socket(int domain, int type, int protocol) {
@@ -218,6 +314,7 @@ int ioctl(int fd, unsigned req, ...) {
     if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(fd))) {
         return global_data.libc.ioctl(fd, req, arg);
     }
+    xtcp_info("lkl ioctl %d", fd);
     return lkl_call(__lkl__NR_ioctl, 3, fd, lkl_ioctl_req_xlate(req), arg);
 }
 
@@ -305,6 +402,7 @@ ssize_t write(int fd, const void *buf, size_t count) {
     if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(fd))) {
         return global_data.libc.write(fd, buf, count);
     }
+    /*xtcp_info("write %d bytes on %d", count, fd);*/
     return lkl_call(__lkl__NR_write, 3, fd, buf, count);
 }
 
