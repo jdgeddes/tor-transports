@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <assert.h>
+#include <glib.h>
 #include "xtcp_util.h"
 
 #define HT_SIZE 1024
@@ -53,15 +54,6 @@ void xtcp_log(XTCPLogLevel log_level, const char *filename, const char *function
     struct tm *tm_info;
     char time_buffer[32];
 
-    if(!logfp) {
-        char *logfilename = getenv("XTCP_LOG");
-        if(!logfilename) {
-            logfp = stdout;
-        } else {
-            logfp = fopen(logfilename, "w");
-        }
-    }
-
     if(min_log_level == XTCP_LOG_UNKNOWN) {
         XTCPLogLevel min_log_level = XTCP_LOG_DEBUG;
         char *loglevel = getenv("XTCP_LOG_LEVEL");
@@ -96,37 +88,51 @@ void xtcp_log(XTCPLogLevel log_level, const char *filename, const char *function
     clock_gettime(CLOCK_REALTIME, &ts);
     long ms = round(ts.tv_nsec / 1.0e6);
 
-    fprintf(logfp, "[%s] [%s.%03ld] ", hostname, time_buffer, ms);
+    GString *msg = g_string_new("");
+
+    g_string_printf(msg, "[%s] [%s.%03ld] ", hostname, time_buffer, ms);
 
     switch(log_level) {
         case XTCP_LOG_DEBUG:
-            fprintf(logfp, "[DEBUG] ");
+            g_string_append_printf(msg, "[DEBUG] ");
             break;
         case XTCP_LOG_INFO:
-            fprintf(logfp, "[INFO] ");
+            g_string_append_printf(msg, "[INFO] ");
             break;
         case XTCP_LOG_MESSAGE:
-            fprintf(logfp, "[MESSAGE] ");
+            g_string_append_printf(msg, "[MESSAGE] ");
             break;
         case XTCP_LOG_WARNING:
-            fprintf(logfp, "[WARNING] ");
+            g_string_append_printf(msg, "[WARNING] ");
             break;
         case XTCP_LOG_ERROR:
-            fprintf(logfp, "[ERROR] ");
+            g_string_append_printf(msg, "[ERROR] ");
             break;
         default:
-            fprintf(logfp, "[?????] ");
+            g_string_append_printf(msg, "[?????] ");
             break;
     }
 
-    fprintf(logfp, "[%s@%s:%d] ", function_name, filename, lineno);
+    g_string_append_printf(msg, "[%s@%s:%d] ", function_name, filename, lineno);
 
     va_list vargs;
     va_start(vargs, format);
-    vfprintf(logfp, format, vargs);
+    g_string_append_vprintf(msg, format, vargs);
     va_end(vargs);
 
-    fprintf(logfp, "\n");
+    g_string_append_printf(msg, "\n");
+
+    if(!logfp) {
+        char *logfilename = getenv("XTCP_LOG");
+        if(!logfilename) {
+            logfp = stdout;
+        } else {
+            logfp = fopen(logfilename, "w");
+        }
+    }
+
+    fwrite(msg->str, sizeof(gchar), msg->len, logfp);
+    g_string_free(msg, TRUE);
 }
 
 /*
