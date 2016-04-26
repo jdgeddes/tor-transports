@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <net/if.h>
 #include <arpa/inet.h>
 #include <poll.h>
 #include <linux/errqueue.h>
@@ -15,6 +16,7 @@
 #include <glib.h>
 #include <sys/types.h>
 #include <ifaddrs.h>
+#include <sys/ioctl.h>
 
 #include <lkl.h>
 #include <lkl_host.h>
@@ -49,14 +51,22 @@ typedef struct libc_func_s {
 
 typedef struct global_data_s {
     libc_func_t libc;
-    int initialized;
+    GQueue *devices;
+} global_data_t;
+
+typedef struct instance_data_s {
+    gint device_index;
     GHashTable *lkl_sockets;
     GHashTable *lkl_epolld;
-} global_data_t;
+} instance_data_t;
 
 global_data_t global_data;
 global_data_t *global_data_pointer = &global_data;
 int global_data_size = sizeof(global_data);
+
+instance_data_t instance_data;
+instance_data_t *instance_data_pointer = &instance_data;
+int instance_data_size = sizeof(instance_data);
 
 #define SETSYM_OR_FAIL(func) { \
 	dlerror(); \
@@ -71,17 +81,25 @@ int global_data_size = sizeof(global_data);
 	} \
 }
 
+#define IS_LKL_SOCKET(fd) (instance_data.lkl_sockets && \
+        g_hash_table_lookup(instance_data.lkl_sockets, GINT_TO_POINTER(fd)))
+
+#define IS_LKL_EPOLL(fd) (instance_data.lkl_epolld && \
+g_hash_table_lookup(instance_data.lkl_epolld, GINT_TO_POINTER(fd)))
+
+
 static int lkl_call(int nr, int args, ...) {
-	long params[6];
-	va_list vl;
-	int i;
+    long params[6];
+    va_list vl;
+    int i;
 
-	va_start(vl, args);
-	for (i = 0; i < args; i++)
-		params[i] = va_arg(vl, long);
-	va_end(vl);
+    va_start(vl, args);
+    for(i = 0; i < args; i++) {
+        params[i] = va_arg(vl, long);
+    }
+    va_end(vl);
 
-	return lkl_set_errno(lkl_syscall(nr, params));
+    return lkl_set_errno(lkl_syscall(nr, params));
 }
 
 static void lkl_print(const char *str, int len) {
@@ -92,86 +110,41 @@ static void lkl_print(const char *str, int len) {
     free(s);
 }
 
-in_addr_t get_local_ip() {
-    struct ifaddrs *ifaddr, *ifa;
+int get_local_addresses(in_addr_t *ip, unsigned char *mac) {
+    int s, ret;
+    struct ifreq ifr;
 
-    if(getifaddrs(&ifaddr) < 0) {
-        xtcp_warning("error calling getifaddrs: %s", strerror(errno));
-        return -1;
+    s = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if(s < 0) {
+        xtcp_error("error opening socket: %s", strerror(errno));
+        return s;
     }
 
-    for(ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-        if(ifa->ifa_addr->sa_family == AF_INET) {
-            struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
-            return sin->sin_addr.s_addr;
-        }
-    }
+    ifr.ifr_addr.sa_family = AF_INET;
+    strcpy(ifr.ifr_name, "eth0");
 
-    return INADDR_NONE;
-}
-
-int lkl_create_device(char *hostname) {
-    struct lkl_netdev *nd = NULL;
-    int nd_id;
-
-    GString *interface = g_string_new("");
-    g_string_printf(interface, "%s-eth0", hostname);
-
-    gchar *devname = g_string_free(interface, FALSE);
-
-    /* setup device */
-    nd = lkl_netdev_tap_create(devname);
-    if(!nd) {
-        xtcp_error("could not create TAP device %s", devname);
-        return -1;
-    }
-    xtcp_info("added device for %s", devname);
-    free(devname);
-
-    nd_id = lkl_netdev_add(nd, NULL);
-    if(nd_id < 0) {
-        xtcp_error("failed to add netdev: %s", lkl_strerror(nd_id));
-        return -1;
-    }
-
-    return nd_id;
-}
-
-int lkl_setup_device(int nd_id,  in_addr_t ip) {
-    int ret, nd_ifindex;
-
-    nd_ifindex = lkl_netdev_get_ifindex(nd_id);
-    if(!nd_ifindex) {
-        xtcp_error("failed to get ifindex for netdev id %d: %s", nd_id, lkl_strerror(nd_ifindex));
-        return -1;
-
-    }
-    lkl_if_up(nd_ifindex);
-
-    int netmask_len = 24;
-    ret = lkl_if_set_ipv4(nd_ifindex, ip, netmask_len);
+    ret = ioctl(s, SIOCGIFADDR, &ifr);
     if(ret < 0) {
-        xtcp_error("failed to set IPv4 address: %s", lkl_strerror(ret));
+        xtcp_error("error getting IP address: %s", strerror(errno));
         return ret;
     }
 
-    in_addr_t gateway = inet_addr("192.168.14.1");
-    ret = lkl_set_ipv4_gateway(gateway);
+    struct sockaddr_in *sin = (struct sockaddr_in *)(&ifr.ifr_addr);
+    *ip = sin->sin_addr.s_addr;
+
+    ret = ioctl(s, SIOCGIFHWADDR, &ifr);
     if(ret < 0) {
-        xtcp_error("failed to set IPv4 gateway: %s", lkl_strerror(ret));
-        /*return -1;*/
+        xtcp_error("error getting MAC address: %s", strerror(errno));
+        return ret;
     }
+
+    memcpy(mac, ifr.ifr_hwaddr.sa_data, 8);
 
     return 0;
 }
 
-void init_lib() {
-    if(global_data.initialized) {
-        xtcp_info("already initialized");
-        /*return;*/
-    }
-
-    xtcp_info("initializing LKL xTCP library");
+int initialize_library(int argc, char *argv[]) {
+    xtcp_message("initializing LKL library");
 
     SETSYM_OR_FAIL(socket);
     SETSYM_OR_FAIL(ioctl);
@@ -190,99 +163,130 @@ void init_lib() {
     SETSYM_OR_FAIL(select);
     SETSYM_OR_FAIL(timerfd_create);
 
-    global_data.lkl_sockets = g_hash_table_new(g_direct_hash, g_direct_equal);
-    global_data.lkl_epolld = g_hash_table_new(g_direct_hash, g_direct_equal);
+    int ndevs = 1;
+    int kernel_memory = 64 * 1024 * 1024;
 
-    char *lkl_kernel_loaded = getenv("LKL_KERNEL_LOADED");
+    if(argc > 0) {
+        ndevs = atoi(argv[0]);
+    }
+    if(argc > 1) {
+        kernel_memory = atoi(argv[1]);
+    }
 
-    lkl_host_ops.print = lkl_print;
+    struct lkl_netdev *nd = NULL;
+    int i, ret, nd_id, nd_ifindex;
 
-    in_addr_t ip;
-    int ret;
+    xtcp_info("creating %d devices", ndevs);
 
-    if(!lkl_kernel_loaded) {
-        int devid = 0;
+    for(i = 0; i < ndevs; i++) {
+        char devname[32];
+        sprintf(devname, "lkl%d", i);
 
-        if(!getenv("SHADOW_SPAWNED")) {
-            devid = lkl_create_device("lkl");
-            if(devid < 0) {
-                xtcp_error("error creating LKL TAP device: %s", lkl_strerror(errno));
-                return;
-            }
+        nd = lkl_netdev_tap_create(devname);
+        if(!nd) {
+            xtcp_error("error creating device %s: %s", devname, lkl_strerror(errno));
+            return -1;
         }
 
-        /* start kernel */
-        ret = lkl_start_kernel(&lkl_host_ops, 64 * 1024 * 1024, "");
-        if(ret) {
-            xtcp_error("can't start kernel: %s", lkl_strerror(ret));
-            return;
-        }
-
-        xtcp_info("kernel started, bring up devices");
-
-        /* bring up localhost */
-        lkl_if_up(1);
-
-        if(devid >= 0) {
-            xtcp_info("setting IP address for dev %d", devid);
-
-            ip = inet_addr("192.168.14.2");
-            if(lkl_setup_device(devid, ip) < 0) {
-                xtcp_error("error setting up LKL device: %s", lkl_strerror(errno));
-                return;
-            }
-        }
-
-
-        /* fillup FDs up to LKL_FD_OFFSET */
-        ret = lkl_sys_mknod("/dev_null", LKL_S_IFCHR | 0600, LKL_MKDEV(1, 3));
-        int dev_null = lkl_sys_open("/dev_null", LKL_O_RDONLY, 0);
-        if (dev_null < 0) {
-            xtcp_error("failed to open /dev/null: %s", lkl_strerror(dev_null));
-            return;
-        }
-
-        int i;
-        for (i = 1; i < 512; i++) {
-            lkl_sys_dup(dev_null);
-        }
-
-        setenv("LKL_KERNEL_LOADED", "TRUE", 1);
-    } else {
-        char hostname[256];
-
-        ip = get_local_ip();
-        if(ip == INADDR_NONE) {
-            xtcp_error("could not get my IP: %s", strerror(errno));
-            return;
-        }
-
-        if(gethostname(hostname, sizeof(hostname)) < 0) {
-            xtcp_error("could not get my hostname: %s", strerror(errno));
-            return;
-        }
-
-        int devid = lkl_create_device(hostname);
-        if(devid < 0) {
-            xtcp_error("error creating device for %s: %s", hostname, lkl_strerror(errno));
-            return;
-        }
-
-        if(lkl_setup_device(devid, ip) < 0) {
-            xtcp_error("error setting up device for %s: %s", hostname, lkl_strerror(errno));
-            return;
+        nd_id = lkl_netdev_add(nd, NULL);
+        if(nd_id < 0) {
+            xtcp_error("error adding device: %s", lkl_strerror(errno));
+            return -1;
         }
     }
 
+    xtcp_info("starting LKL kernel");
 
-    global_data.initialized = TRUE;
+    /* start kernel */
+    lkl_host_ops.print = lkl_print;
 
-    xtcp_info("initialized all interposed functions");
+    ret = lkl_start_kernel(&lkl_host_ops,  kernel_memory, "");
+    if(ret) {
+        xtcp_error("can't start kernel: %s", lkl_strerror(ret));
+        return -1;
+    }
+
+    /* bring up localhost */
+    lkl_if_up(1);
+
+    global_data.devices = g_queue_new();
+
+    /* bring up all the devices and add them to queue */
+    for(i = 0; i < ndevs; i++) {
+        nd_ifindex = lkl_netdev_get_ifindex(i);
+        if(nd_ifindex < 0) {
+            xtcp_error("error getting nfindex for dev %d: %s", i, lkl_strerror(nd_ifindex));
+            return -1;
+        }
+
+        g_queue_push_tail(global_data.devices, GINT_TO_POINTER(nd_ifindex));
+    }
+
+    /* fillup FDs up to LKL_FD_OFFSET */
+    ret = lkl_sys_mknod("/dev_null", LKL_S_IFCHR | 0600, LKL_MKDEV(1, 3));
+    int dev_null = lkl_sys_open("/dev_null", LKL_O_RDONLY, 0);
+    if (dev_null < 0) {
+        xtcp_error("failed to open /dev/null: %s", lkl_strerror(dev_null));
+        return -1;
+    }
+
+    for (i = 1; i < 512; i++) {
+        lkl_sys_dup(dev_null);
+    }
+
+    return 0;
+}
+
+int new_library_instance() {
+    xtcp_info("new LKL instance");
+
+    instance_data.lkl_sockets = g_hash_table_new(g_direct_hash, g_direct_equal);
+    instance_data.lkl_epolld = g_hash_table_new(g_direct_hash, g_direct_equal);
+
+    if(g_queue_get_length(global_data.devices) == 0) {
+        xtcp_error("no more devices for LKL instance");
+        return -1;
+    }
+
+    instance_data.device_index = GPOINTER_TO_INT(g_queue_pop_head(global_data.devices));
+    lkl_if_up(instance_data.device_index);
+
+    in_addr_t ip;
+    unsigned char mac[8];
+    int ret;
+
+    get_local_addresses(&ip, mac);
+    ip = inet_addr("192.168.14.2");
+
+    char ipStringBuffer[256];
+    const char *ipString = inet_ntop(AF_INET, &ip, ipStringBuffer, sizeof(ipStringBuffer)); 
+    xtcp_info("setting IP of device %d to %s (%lu [%lu])", instance_data.device_index,
+            ipString, ip, inet_addr("11.0.0.1"));
+
+
+    ret = lkl_if_set_ipv4(instance_data.device_index, ip, 24);
+    if(ret < 0) {
+        xtcp_error("could not set IPv4 address for index %d: %s", instance_data.device_index, 
+                lkl_strerror(ret));
+        return -1;
+    }
+
+    /*ret = lkl_set_ipv4_gateway(inet_addr("11.1.0.1"));*/
+    /*if(ret < 0) {*/
+        /*xtcp_error("could not set gateway: %s", lkl_strerror(ret));*/
+        /*return -1;*/
+    /*}*/
+
+    return 0;
 }
 
 void init() {
-    if(!getenv("SHADOW_SPANWED")) {
-       init_lib();
+    char *inshadow = getenv("SHADOW_SPAWNED");
+
+    xtcp_info("init xTCP LKL library (in shadow %s)", (inshadow ? inshadow : "NULL"));
+    if(!inshadow) {
+        initialize_library(0, NULL);
+        new_library_instance();
     }
 }
 
@@ -293,7 +297,7 @@ int socket(int domain, int type, int protocol) {
     }
 
     int sockfd = lkl_call(__lkl__NR_socket, 3, domain, type, protocol);
-    g_hash_table_insert(global_data.lkl_sockets, GINT_TO_POINTER(sockfd),
+    g_hash_table_insert(instance_data.lkl_sockets, GINT_TO_POINTER(sockfd),
             GINT_TO_POINTER(TRUE));
 
     xtcp_info("created LKL socket %d (%s)", sockfd, strerror(errno));
@@ -301,7 +305,7 @@ int socket(int domain, int type, int protocol) {
     return sockfd;
 }
 
-int ioctl(int fd, unsigned req, ...) {
+int ioctl(int fd, unsigned long int req, ...) {
     xtcp_info("ioctl fd %d", fd);
 
     va_list vl;
@@ -311,7 +315,7 @@ int ioctl(int fd, unsigned req, ...) {
     arg = va_arg(vl, long);
     va_end(vl);
 
-    if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(fd))) {
+    if(!IS_LKL_SOCKET(fd)) {
         return global_data.libc.ioctl(fd, req, arg);
     }
     xtcp_info("lkl ioctl %d", fd);
@@ -319,7 +323,7 @@ int ioctl(int fd, unsigned req, ...) {
 }
 
 int setsockopt(int fd, int level, int optname, const void *optval, socklen_t optlen) {
-    if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(fd))) {
+    if(!IS_LKL_SOCKET(fd)) {
         return global_data.libc.setsockopt(fd, level, optname, optval, optlen);
     }
     xtcp_info("setsockopt %d", fd);
@@ -327,7 +331,7 @@ int setsockopt(int fd, int level, int optname, const void *optval, socklen_t opt
 }
 
 int getsockopt(int fd, int level, int optname, void *optval, socklen_t *optlen) {
-    if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(fd))) {
+    if(!IS_LKL_SOCKET(fd)) {
         return global_data.libc.getsockopt(fd, level, optname, optval, optlen);
     }
     xtcp_info("getsockopt %d", fd);
@@ -335,7 +339,7 @@ int getsockopt(int fd, int level, int optname, void *optval, socklen_t *optlen) 
 }
 
 int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
-    if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(sockfd))) {
+    if(!IS_LKL_SOCKET(sockfd)) {
         return global_data.libc.bind(sockfd, addr, addrlen);
     }
     xtcp_info("bind %d", sockfd);
@@ -343,7 +347,7 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
 }
 
 int listen(int sockfd, int backlog) {
-    if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(sockfd))) {
+    if(!IS_LKL_SOCKET(sockfd)) {
         return global_data.libc.listen(sockfd, backlog);
     }
     xtcp_info("listen %d", sockfd);
@@ -351,12 +355,12 @@ int listen(int sockfd, int backlog) {
 }
 
 int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
-    if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(sockfd))) {
+    if(!IS_LKL_SOCKET(sockfd)) {
         return global_data.libc.accept(sockfd, addr, addrlen);
     }
 
     int newsockfd = lkl_call(__lkl__NR_accept, 3, sockfd, addr, addrlen);
-    g_hash_table_insert(global_data.lkl_sockets, GINT_TO_POINTER(newsockfd), GINT_TO_POINTER(TRUE));
+    g_hash_table_insert(instance_data.lkl_sockets, GINT_TO_POINTER(newsockfd), GINT_TO_POINTER(TRUE));
 
     xtcp_info("accept %d on %d", newsockfd, sockfd);
 
@@ -364,7 +368,7 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
 }
 
 int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
-    if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(sockfd))) {
+    if(!IS_LKL_SOCKET(sockfd)) {
         return global_data.libc.connect(sockfd, address, address_len);
     }
     xtcp_info("connect %d", sockfd);
@@ -383,7 +387,7 @@ int connect(int sockfd, const struct sockaddr *address, socklen_t address_len) {
 /*}*/
 
 ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
-    if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(sockfd))) {
+    if(!IS_LKL_SOCKET(sockfd)) {
         return global_data.libc.send(sockfd, buf, len, flags);
     }
     xtcp_info("send %d", sockfd);
@@ -391,7 +395,7 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags) {
 }
 
 ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
-    if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(sockfd))) {
+    if(!IS_LKL_SOCKET(sockfd)) {
         return global_data.libc.recv(sockfd, buf, len, flags);
     }
     xtcp_info("recv %d", sockfd);
@@ -399,7 +403,8 @@ ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
 }
 
 ssize_t write(int fd, const void *buf, size_t count) {
-    if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(fd))) {
+    /*xtcp_info("write %d", fd);*/
+    if(!IS_LKL_SOCKET(fd)) {
         return global_data.libc.write(fd, buf, count);
     }
     /*xtcp_info("write %d bytes on %d", count, fd);*/
@@ -407,17 +412,17 @@ ssize_t write(int fd, const void *buf, size_t count) {
 }
 
 ssize_t read(int fd, void *buf, size_t count) {
-    if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(fd))) {
+    if(!IS_LKL_SOCKET(fd)) {
         return global_data.libc.read(fd, buf, count);
     }
     return lkl_call(__lkl__NR_read, 3, fd, buf, count);
 }
 
 int close(int fd) {
-    if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(fd))) {
+    if(!IS_LKL_SOCKET(fd)) {
         return global_data.libc.close(fd);
     }
-    g_hash_table_remove(global_data.lkl_sockets, GINT_TO_POINTER(fd));
+    g_hash_table_remove(instance_data.lkl_sockets, GINT_TO_POINTER(fd));
     return lkl_call(__lkl__NR_close, 1, fd);
 }
 
@@ -425,18 +430,18 @@ int epoll_create(int size) {
     int localfd = global_data.libc.epoll_create(size);
     int lklfd = lkl_call(__lkl__NR_epoll_create, 1, size);
     xtcp_info("creating local epoll %d and LKL %d", localfd, lklfd);
-    g_hash_table_insert(global_data.lkl_epolld, GINT_TO_POINTER(localfd), GINT_TO_POINTER(lklfd));
+    g_hash_table_insert(instance_data.lkl_epolld, GINT_TO_POINTER(localfd), GINT_TO_POINTER(lklfd));
     return localfd;
 }
 
 int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
     xtcp_info("epoll ctl epfd %d op %d fd %d", epfd, op, fd);
 
-    if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(fd))) {
+    if(!IS_LKL_SOCKET(fd)) {
         return global_data.libc.epoll_ctl(epfd, op, fd, event);
     }
 
-    int lkl_epfd = GPOINTER_TO_INT(g_hash_table_lookup(global_data.lkl_epolld, GINT_TO_POINTER(epfd)));
+    int lkl_epfd = GPOINTER_TO_INT(g_hash_table_lookup(instance_data.lkl_epolld, GINT_TO_POINTER(epfd)));
     if(!lkl_epfd) {
         xtcp_warning("no LKL epfd for %d", epfd);
         return -1;
@@ -446,12 +451,13 @@ int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
 }
 
 int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) {
-    int lkl_epfd = GPOINTER_TO_INT(g_hash_table_lookup(global_data.lkl_epolld, GINT_TO_POINTER(epfd)));
 
-    if(!lkl_epfd) {
+
+    if(!IS_LKL_EPOLL(epfd)) {
         return global_data.libc.epoll_wait(epfd, events, maxevents, timeout);
     }
 
+    int lkl_epfd = GPOINTER_TO_INT(g_hash_table_lookup(instance_data.lkl_epolld, GINT_TO_POINTER(epfd)));
     xtcp_info("epoll wait %d/%d (%d)", epfd, lkl_epfd, timeout);
 
     int nevents = 0;
@@ -475,7 +481,7 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
 }
 
 int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *expectfds, struct timeval *timeout) {
-    /*if(!g_hash_table_lookup(global_data.lkl_sockets, GINT_TO_POINTER(sockfd))) {*/
+    /*if(!g_hash_table_lookup(instance_data.lkl_sockets, GINT_TO_POINTER(sockfd))) {*/
         /*return global_data.libc.select(nfds, readfds, writefds, expectfds, timeout);*/
     /*}*/
     xtcp_info("select %d", nfds);
