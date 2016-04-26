@@ -256,7 +256,6 @@ int new_library_instance() {
     int ret;
 
     get_local_addresses(&ip, mac);
-    ip = inet_addr("192.168.14.2");
 
     char ipStringBuffer[256];
     const char *ipString = inet_ntop(AF_INET, &ip, ipStringBuffer, sizeof(ipStringBuffer)); 
